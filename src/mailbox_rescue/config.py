@@ -6,7 +6,6 @@ from pathlib import Path
 
 from platformdirs import user_data_path
 
-
 APP_NAME = "Mailbox Rescue"
 APP_AUTHOR = "Mailbox Rescue"
 
@@ -18,8 +17,8 @@ class AppPaths:
     client_secrets_file: Path
 
     @classmethod
-    def discover(cls) -> "AppPaths":
-        data_dir = Path(user_data_path(APP_NAME, APP_AUTHOR, roaming=True))
+    def discover(cls) -> AppPaths:
+        data_dir = Path(user_data_path(APP_NAME, APP_AUTHOR))
         data_dir.mkdir(parents=True, exist_ok=True)
 
         configured_client = os.getenv("MAILBOX_RESCUE_GOOGLE_CLIENT_SECRETS")

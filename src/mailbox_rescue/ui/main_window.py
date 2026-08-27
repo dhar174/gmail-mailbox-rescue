@@ -49,7 +49,7 @@ class MainWindow(QMainWindow):
         except OAuthConfigurationError as exc:
             QMessageBox.warning(self, "OAuth configuration required", str(exc))
             self.status.setText("Google OAuth configuration required")
-        except Exception as exc:  # UI boundary: surface unexpected API/auth failures cleanly.
+        except Exception as exc:  # noqa: BLE001 - Outermost GUI boundary to prevent unhandled API/auth errors from crashing the app.
             QMessageBox.critical(self, "Could not connect", str(exc))
             self.status.setText("Connection failed")
         else:

@@ -5,7 +5,6 @@ import pytest
 
 from mailbox_rescue.gmail.client import GmailClient, decode_raw_message
 
-
 SAMPLE_RFC822_EMAIL = (
     b"From: sender@example.com\r\n"
     b"To: recipient@example.com\r\n"

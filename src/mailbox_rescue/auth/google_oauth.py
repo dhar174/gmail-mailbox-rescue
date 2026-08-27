@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
-
 
 GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 SCOPES = (GMAIL_READONLY_SCOPE,)
@@ -70,4 +70,15 @@ class GoogleOAuth:
 
     def _save(self, credentials: Credentials) -> None:
         self.token_file.parent.mkdir(parents=True, exist_ok=True)
-        self.token_file.write_text(credentials.to_json(), encoding="utf-8")
+        temp_file = self.token_file.with_suffix(f"{self.token_file.suffix}.tmp")
+        try:
+            temp_file.write_text(credentials.to_json(), encoding="utf-8")
+            if os.name == "posix":
+                try:
+                    temp_file.chmod(0o600)
+                except OSError:
+                    pass
+            temp_file.replace(self.token_file)
+        except Exception:
+            temp_file.unlink(missing_ok=True)
+            raise

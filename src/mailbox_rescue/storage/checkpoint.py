@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -28,8 +28,27 @@ class CheckpointStore:
             ).fetchone()
         return row is not None
 
+    def get_completed(self, message_id: str) -> CompletedMessage | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT message_id, relative_path, sha256, size_bytes
+                FROM completed_messages
+                WHERE message_id = ?
+                """,
+                (message_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return CompletedMessage(
+            message_id=row[0],
+            relative_path=row[1],
+            sha256=row[2],
+            size_bytes=int(row[3]),
+        )
+
     def mark_completed(self, message: CompletedMessage) -> None:
-        completed_at = datetime.now(timezone.utc).isoformat()
+        completed_at = datetime.now(UTC).isoformat()
         with self._connect() as connection:
             connection.execute(
                 """
