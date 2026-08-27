@@ -57,6 +57,6 @@ class MainWindow(QMainWindow):
                 f"Connected: {profile.email_address}\n"
                 f"{profile.messages_total:,} messages · {profile.threads_total:,} threads"
             )
-            self.connect_button.setText("Reconnect Google Account")
+            self.connect_button.setText("Refresh Account")
         finally:
             self.connect_button.setEnabled(True)

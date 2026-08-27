@@ -16,6 +16,12 @@ class MailboxProfile:
     threads_total: int
 
 
+def decode_raw_message(encoded: str) -> bytes:
+    """Decode Gmail API base64url-encoded message payload into raw bytes."""
+    padding = "=" * (-len(encoded) % 4)
+    return base64.urlsafe_b64decode(encoded + padding)
+
+
 class GmailClient:
     def __init__(self, credentials: Credentials) -> None:
         self._service = build("gmail", "v1", credentials=credentials, cache_discovery=False)
@@ -66,6 +72,4 @@ class GmailClient:
             .get(userId="me", id=message_id, format="raw")
             .execute()
         )
-        encoded = message["raw"]
-        padding = "=" * (-len(encoded) % 4)
-        return base64.urlsafe_b64decode(encoded + padding)
+        return decode_raw_message(message["raw"])

@@ -10,7 +10,7 @@ Mailbox Rescue does not need a hosted backend and is designed so OAuth tokens an
 
 ## Project status
 
-Early MVP development. See [Issue #1](https://github.com/dhar174/gmail-mailbox-rescue/issues/1) for the first vertical slice.
+Early MVP development. See [Issue #1](https://github.com/dhar174/gmail-mailbox-rescue/issues/1) for the MVP roadmap.
 
 The initial target is:
 
