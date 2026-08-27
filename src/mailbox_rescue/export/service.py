@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import google.auth.exceptions
-from googleapiclient.errors import Error as GoogleApiError, HttpError
+from googleapiclient.errors import Error as GoogleApiError
+from googleapiclient.errors import HttpError
 
 from mailbox_rescue.export.eml import write_eml
 from mailbox_rescue.export.models import (
