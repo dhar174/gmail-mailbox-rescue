@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-08-27T03:36:04.415Z",
+  "entries": [
+    "auth-implementation-patterns",
+    "backend-security-coder",
+    "code-review-checklist",
+    "database",
+    "file-path-traversal",
+    "git-workflow-and-versioning",
+    "gmail-automation",
+    "pytest-skill",
+    "python-packaging",
+    "python-patterns",
+    "python-pro",
+    "python-testing-patterns",
+    "repo-maintainer"
+  ]
+}
