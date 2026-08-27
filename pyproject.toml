@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gmail-mailbox-rescue"
+version = "0.1.0"
+description = "Local-first desktop Gmail exporter for preserving a mailbox as portable files."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+dependencies = [
+  "PySide6>=6.8,<7",
+  "google-api-python-client>=2.149,<3",
+  "google-auth>=2.35,<3",
+  "google-auth-oauthlib>=1.2,<2",
+  "platformdirs>=4.3,<5",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9",
+  "pytest-cov>=5,<7",
+  "ruff>=0.8,<1",
+]
+
+[project.scripts]
+mailbox-rescue = "mailbox_rescue.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mailbox_rescue"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
