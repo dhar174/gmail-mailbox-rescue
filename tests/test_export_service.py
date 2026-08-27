@@ -67,12 +67,11 @@ class FakeGmailClient:
                 raise effect
             if callable(effect):
                 effect()
-        for mid in self.message_ids:
-            yield mid
+        yield from self.message_ids
 
     def get_raw_message(self, message_id: str) -> bytes:
         self.get_raw_calls.append(message_id)
-        if message_id in self.get_raw_side_effects and self.get_raw_side_effects[message_id]:
+        if self.get_raw_side_effects.get(message_id):
             effect = self.get_raw_side_effects[message_id].pop(0)
             if isinstance(effect, BaseException):
                 raise effect
@@ -413,7 +412,7 @@ def test_quota_403_retried_and_permission_403_not_retried(tmp_path: Path) -> Non
     fake_client.get_raw_side_effects["msg_quota"] = [quota_err]  # 1 quota err then success
     fake_client.get_raw_side_effects["msg_perm"] = [perm_err]  # Permanent 403
 
-    policy, delays = _make_test_policy()
+    policy, _ = _make_test_policy()
     service = ExportService(fake_client, store, policy)  # type: ignore[arg-type]
 
     result = service.run(output_root=tmp_path)
@@ -487,9 +486,11 @@ def test_checkpoint_database_failure_raises_fatal_storage_error(tmp_path: Path) 
     policy, _ = _make_test_policy()
     service = ExportService(fake_client, store, policy)  # type: ignore[arg-type]
 
-    with patch.object(store, "mark_completed", side_effect=Exception("DB write failed")):
-        with pytest.raises(FatalStorageError, match="Fatal database error"):
-            service.run(output_root=tmp_path)
+    with (
+        patch.object(store, "mark_completed", side_effect=Exception("DB write failed")),
+        pytest.raises(FatalStorageError, match="Fatal database error"),
+    ):
+        service.run(output_root=tmp_path)
 
 
 def test_file_write_failure_raises_fatal_storage_error(tmp_path: Path) -> None:
@@ -498,9 +499,11 @@ def test_file_write_failure_raises_fatal_storage_error(tmp_path: Path) -> None:
     policy, _ = _make_test_policy()
     service = ExportService(fake_client, store, policy)  # type: ignore[arg-type]
 
-    with patch("mailbox_rescue.export.service.write_eml", side_effect=OSError("Disk write failed")):
-        with pytest.raises(FatalStorageError, match="Fatal filesystem error"):
-            service.run(output_root=tmp_path)
+    with (
+        patch("mailbox_rescue.export.service.write_eml", side_effect=OSError("Disk write failed")),
+        pytest.raises(FatalStorageError, match="Fatal filesystem error"),
+    ):
+        service.run(output_root=tmp_path)
 
     assert not store.is_completed("msg_1")
 

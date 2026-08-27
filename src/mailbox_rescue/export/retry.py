@@ -5,13 +5,8 @@ import json
 import socket
 import ssl
 import urllib.error
-from typing import TYPE_CHECKING, Any
-
 import google.auth.exceptions
 from googleapiclient.errors import HttpError
-
-if TYPE_CHECKING:
-    pass
 
 _RATE_LIMIT_REASONS = frozenset(
     {
@@ -41,7 +36,7 @@ def extract_error_reasons(error: HttpError) -> set[str]:
 
     if content_str:
         try:
-            data: Any = json.loads(content_str)
+            data = json.loads(content_str)
             if isinstance(data, dict):
                 error_obj = data.get("error")
                 if isinstance(error_obj, dict):

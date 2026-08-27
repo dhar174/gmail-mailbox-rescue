@@ -74,8 +74,7 @@ class RetryPolicy:
         Compute backoff delay before attempt `attempt + 1`.
         `attempt` is 1-based (i.e. attempt=1 after 1st failure).
         """
-        if attempt < 1:
-            attempt = 1
+        attempt = max(attempt, 1)
         exponential = self.base_delay * (2 ** (attempt - 1))
         jitter_amount = self.jitter_fn(self.jitter) if self.jitter > 0 else 0.0
         return min(exponential + jitter_amount, self.max_delay)

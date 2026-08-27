@@ -189,7 +189,7 @@ class ExportService:
                             last_failed_at=datetime.now(UTC).isoformat(),
                         )
                     )
-                except Exception as db_exc:
+                except Exception as db_exc:  # noqa: BLE001
                     raise FatalStorageError(
                         f"Failed to record message failure in checkpoint database: {db_exc}"
                     ) from db_exc
@@ -213,7 +213,7 @@ class ExportService:
             # Write .eml atomically to disk
             try:
                 written = write_eml(output_root, msg_id, raw_bytes)
-            except Exception as fs_exc:
+            except Exception as fs_exc:  # noqa: BLE001
                 raise FatalStorageError(
                     f"Fatal filesystem error writing message '{msg_id}': {fs_exc}"
                 ) from fs_exc
@@ -230,7 +230,7 @@ class ExportService:
                     )
                 )
                 self._checkpoint_store.clear_failure(msg_id)
-            except Exception as db_exc:
+            except Exception as db_exc:  # noqa: BLE001
                 raise FatalStorageError(
                     f"Fatal database error checkpointing message '{msg_id}': {db_exc}"
                 ) from db_exc
@@ -294,7 +294,7 @@ class ExportService:
                         return None
                     ids.append(msg_id)
                 return ids
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 if is_transient_error(exc) and attempt < self._retry_policy.max_attempts:
                     delay = self._retry_policy.compute_delay(attempt)
                     if progress_callback:
@@ -331,7 +331,7 @@ class ExportService:
             try:
                 raw_bytes = self._gmail_client.get_raw_message(message_id)
                 return raw_bytes, None, attempt, False
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 if is_transient_error(exc) and attempt < self._retry_policy.max_attempts:
                     delay = self._retry_policy.compute_delay(attempt)
                     if progress_callback:
