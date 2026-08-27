@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import http.client
+import socket
+import sqlite3
+import ssl
 import threading
+import urllib.error
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+import google.auth.exceptions
+from googleapiclient.errors import Error as GoogleApiError, HttpError
 
 from mailbox_rescue.export.eml import write_eml
 from mailbox_rescue.export.models import (
@@ -22,6 +30,20 @@ from mailbox_rescue.storage.checkpoint import CheckpointStore, CompletedMessage,
 
 if TYPE_CHECKING:
     from mailbox_rescue.gmail.client import GmailClient
+
+_GMAIL_API_EXCEPTIONS = (
+    GoogleApiError,
+    HttpError,
+    google.auth.exceptions.GoogleAuthError,
+    urllib.error.URLError,
+    http.client.HTTPException,
+    ConnectionError,
+    TimeoutError,
+    socket.error,
+    ssl.SSLError,
+    ValueError,
+    KeyError,
+)
 
 
 class ExportService:
@@ -189,7 +211,7 @@ class ExportService:
                             last_failed_at=datetime.now(UTC).isoformat(),
                         )
                     )
-                except Exception as db_exc:
+                except sqlite3.Error as db_exc:
                     raise FatalStorageError(
                         f"Failed to record message failure in checkpoint database: {db_exc}"
                     ) from db_exc
@@ -213,7 +235,7 @@ class ExportService:
             # Write .eml atomically to disk
             try:
                 written = write_eml(output_root, msg_id, raw_bytes)
-            except Exception as fs_exc:
+            except OSError as fs_exc:
                 raise FatalStorageError(
                     f"Fatal filesystem error writing message '{msg_id}': {fs_exc}"
                 ) from fs_exc
@@ -230,7 +252,7 @@ class ExportService:
                     )
                 )
                 self._checkpoint_store.clear_failure(msg_id)
-            except Exception as db_exc:
+            except sqlite3.Error as db_exc:
                 raise FatalStorageError(
                     f"Fatal database error checkpointing message '{msg_id}': {db_exc}"
                 ) from db_exc
@@ -294,7 +316,7 @@ class ExportService:
                         return None
                     ids.append(msg_id)
                 return ids
-            except Exception as exc:
+            except _GMAIL_API_EXCEPTIONS as exc:
                 if is_transient_error(exc) and attempt < self._retry_policy.max_attempts:
                     delay = self._retry_policy.compute_delay(attempt)
                     if progress_callback:
@@ -331,7 +353,7 @@ class ExportService:
             try:
                 raw_bytes = self._gmail_client.get_raw_message(message_id)
                 return raw_bytes, None, attempt, False
-            except Exception as exc:
+            except _GMAIL_API_EXCEPTIONS as exc:
                 if is_transient_error(exc) and attempt < self._retry_policy.max_attempts:
                     delay = self._retry_policy.compute_delay(attempt)
                     if progress_callback:

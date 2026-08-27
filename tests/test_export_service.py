@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import threading
 from collections.abc import Iterator
 from pathlib import Path
@@ -487,7 +488,7 @@ def test_checkpoint_database_failure_raises_fatal_storage_error(tmp_path: Path) 
     service = ExportService(fake_client, store, policy)  # type: ignore[arg-type]
 
     with (
-        patch.object(store, "mark_completed", side_effect=Exception("DB write failed")),
+        patch.object(store, "mark_completed", side_effect=sqlite3.DatabaseError("DB write failed")),
         pytest.raises(FatalStorageError, match="Fatal database error"),
     ):
         service.run(output_root=tmp_path)
