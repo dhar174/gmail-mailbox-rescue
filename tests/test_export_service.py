@@ -494,6 +494,19 @@ def test_checkpoint_database_failure_raises_fatal_storage_error(tmp_path: Path) 
         service.run(output_root=tmp_path)
 
 
+def test_checkpoint_read_failure_raises_fatal_storage_error(tmp_path: Path) -> None:
+    store = CheckpointStore(tmp_path / "checkpoint.sqlite3")
+    fake_client = FakeGmailClient(message_map={"msg_1": b"raw 1"})
+    policy, _ = _make_test_policy()
+    service = ExportService(fake_client, store, policy)  # type: ignore[arg-type]
+
+    with (
+        patch.object(store, "is_completed", side_effect=sqlite3.DatabaseError("DB read failed")),
+        pytest.raises(FatalStorageError, match="Fatal database error reading checkpoint"),
+    ):
+        service.run(output_root=tmp_path)
+
+
 def test_file_write_failure_raises_fatal_storage_error(tmp_path: Path) -> None:
     store = CheckpointStore(tmp_path / "checkpoint.sqlite3")
     fake_client = FakeGmailClient(message_map={"msg_1": b"raw 1"})
@@ -539,3 +552,26 @@ def test_scan_retry_exhaustion_raises_scan_error(tmp_path: Path) -> None:
 
     assert len(delays) == 3
     assert len(fake_client.scan_calls) == 4
+
+
+def test_fetch_retry_callback_cancellation_skips_sleep(tmp_path: Path) -> None:
+    store = CheckpointStore(tmp_path / "checkpoint.sqlite3")
+    fake_client = FakeGmailClient(message_map={"msg_1": b"raw 1"})
+    fake_client.get_raw_side_effects["msg_1"] = [_make_http_error(503)]
+    cancel_event = threading.Event()
+
+    def on_progress(progress: ExportProgress) -> None:
+        if progress.phase == ExportPhase.RETRYING:
+            cancel_event.set()
+
+    policy, delays = _make_test_policy()
+    service = ExportService(fake_client, store, policy)  # type: ignore[arg-type]
+
+    result = service.run(
+        output_root=tmp_path,
+        cancel_event=cancel_event,
+        progress_callback=on_progress,
+    )
+
+    assert result.cancelled is True
+    assert delays == []

@@ -5,6 +5,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
+from math import isfinite
 
 
 class ExportScope(StrEnum):
@@ -68,6 +69,19 @@ class RetryPolicy:
     jitter: float = 1.0
     sleep_fn: Callable[[float], None] = field(default=time.sleep)
     jitter_fn: Callable[[float], float] = field(default=_default_jitter)
+
+    def __post_init__(self) -> None:
+        if self.max_attempts < 1:
+            raise ValueError("max_attempts must be at least 1")
+        for name, value in (
+            ("base_delay", self.base_delay),
+            ("max_delay", self.max_delay),
+            ("jitter", self.jitter),
+        ):
+            if value < 0:
+                raise ValueError(f"{name} must be non-negative")
+            if not isfinite(value):
+                raise ValueError(f"{name} must be finite")
 
     def compute_delay(self, attempt: int) -> float:
         """

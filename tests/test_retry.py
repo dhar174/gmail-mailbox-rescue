@@ -1,4 +1,5 @@
 import json
+import math
 import socket
 import sqlite3
 import ssl
@@ -141,3 +142,20 @@ def test_retry_policy_delay_calculation() -> None:
     assert policy.compute_delay(4) == 8.25
     # Attempt 5 (clamped to max_delay 16.0): 1.0 * (2^4) + 0.25 = 16.25 -> clamped to 16.0
     assert policy.compute_delay(5) == 16.0
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("max_attempts", 0),
+        ("base_delay", -1.0),
+        ("max_delay", -1.0),
+        ("jitter", -1.0),
+        ("base_delay", math.inf),
+        ("max_delay", math.nan),
+        ("jitter", math.inf),
+    ],
+)
+def test_retry_policy_rejects_invalid_settings(field: str, value: float) -> None:
+    with pytest.raises(ValueError, match=field):
+        RetryPolicy(**{field: value})  # type: ignore[arg-type]
