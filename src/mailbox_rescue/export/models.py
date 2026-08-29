@@ -78,10 +78,10 @@ class RetryPolicy:
             ("max_delay", self.max_delay),
             ("jitter", self.jitter),
         ):
-            if value < 0:
-                raise ValueError(f"{name} must be non-negative")
             if not isfinite(value):
                 raise ValueError(f"{name} must be finite")
+            if value < 0:
+                raise ValueError(f"{name} must be non-negative")
 
     def compute_delay(self, attempt: int) -> float:
         """
