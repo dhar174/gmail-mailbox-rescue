@@ -140,8 +140,13 @@ class ExportService:
                     failures=failures,
                 )
 
-            # Check if message is already completed
-            if self._checkpoint_store.is_completed(msg_id):
+            try:
+                already_completed = self._checkpoint_store.is_completed(msg_id)
+            except sqlite3.Error as db_exc:
+                raise FatalStorageError(
+                    f"Fatal database error reading checkpoint for message '{msg_id}': {db_exc}"
+                ) from db_exc
+            if already_completed:
                 skipped_completed += 1
                 if progress_callback:
                     progress_callback(
