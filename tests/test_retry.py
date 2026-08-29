@@ -154,6 +154,7 @@ def test_retry_policy_delay_calculation() -> None:
         ("jitter", -1.0),
         ("base_delay", math.inf),
         ("base_delay", -math.inf),
+        ("base_delay", math.nan),
         ("max_delay", math.inf),
         ("max_delay", math.nan),
         ("jitter", math.inf),
