@@ -241,8 +241,8 @@ class ExportService:
                     f"Fatal filesystem error writing message '{msg_id}': {fs_exc}"
                 ) from fs_exc
 
-            # Checkpoint completed message and clear failure record
-            relative_path = f"messages/{written.path.name}"
+            # Checkpoint completed message (which atomically clears any prior failure)
+            relative_path = written.path.relative_to(output_root).as_posix()
             try:
                 self._checkpoint_store.mark_completed(
                     CompletedMessage(
@@ -252,7 +252,6 @@ class ExportService:
                         size_bytes=written.size_bytes,
                     )
                 )
-                self._checkpoint_store.clear_failure(msg_id)
             except sqlite3.Error as db_exc:
                 raise FatalStorageError(
                     f"Fatal database error checkpointing message '{msg_id}': {db_exc}"

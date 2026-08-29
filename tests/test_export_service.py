@@ -381,9 +381,9 @@ def test_retry_exhaustion_records_failure_and_continues(tmp_path: Path) -> None:
     assert len(delays) == 3
 
 
-def test_quota_403_retried_and_permission_403_not_retried(tmp_path: Path) -> None:
+def test_rate_limit_403_retried_and_permission_403_not_retried(tmp_path: Path) -> None:
     store = CheckpointStore(tmp_path / "checkpoint.sqlite3")
-    quota_err = _make_http_error(
+    rate_limit_err = _make_http_error(
         403,
         error_dict={
             "error": {
@@ -406,11 +406,11 @@ def test_quota_403_retried_and_permission_403_not_retried(tmp_path: Path) -> Non
 
     fake_client = FakeGmailClient(
         message_map={
-            "msg_quota": b"raw quota",
+            "msg_rate_limit": b"raw rate limit",
             "msg_perm": b"raw perm",
         }
     )
-    fake_client.get_raw_side_effects["msg_quota"] = [quota_err]  # 1 quota err then success
+    fake_client.get_raw_side_effects["msg_rate_limit"] = [rate_limit_err]  # 1 rate limit err then success
     fake_client.get_raw_side_effects["msg_perm"] = [perm_err]  # Permanent 403
 
     policy, _ = _make_test_policy()
@@ -420,11 +420,11 @@ def test_quota_403_retried_and_permission_403_not_retried(tmp_path: Path) -> Non
 
     assert result.completed_this_run == 1
     assert result.failed == 1
-    assert store.is_completed("msg_quota")
+    assert store.is_completed("msg_rate_limit")
     assert not store.is_completed("msg_perm")
 
-    # msg_quota was retried (2 calls total)
-    assert fake_client.get_raw_calls.count("msg_quota") == 2
+    # msg_rate_limit was retried (2 calls total)
+    assert fake_client.get_raw_calls.count("msg_rate_limit") == 2
     # msg_perm failed immediately on 1st attempt (1 call total, no retry)
     assert fake_client.get_raw_calls.count("msg_perm") == 1
 

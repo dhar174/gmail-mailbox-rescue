@@ -79,6 +79,10 @@ class CheckpointStore:
                     completed_at,
                 ),
             )
+            connection.execute(
+                "DELETE FROM failed_messages WHERE message_id = ?",
+                (message.message_id,),
+            )
 
     def completed_count(self) -> int:
         with self._connect() as connection:

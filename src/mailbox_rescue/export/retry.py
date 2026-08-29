@@ -13,9 +13,6 @@ _RATE_LIMIT_REASONS = frozenset(
     {
         "ratelimitexceeded",
         "userratelimitexceeded",
-        "quotaexceeded",
-        "dailylimitexceeded",
-        "resource_exhausted",
     }
 )
 
@@ -42,7 +39,7 @@ def extract_error_reasons(error: HttpError) -> set[str]:
                 error_obj = data.get("error")
                 if isinstance(error_obj, dict):
                     status = error_obj.get("status")
-                    if isinstance(status, str):
+                    if status and isinstance(status, str):
                         reasons.add(status)
 
                     errors_list = error_obj.get("errors")
@@ -60,7 +57,7 @@ def extract_error_reasons(error: HttpError) -> set[str]:
                                 if "errorType" in item:
                                     reasons.add(str(item["errorType"]))
         except (ValueError, json.JSONDecodeError, TypeError):
-            pass
+            reasons.add(content_str)
 
     details_attr = getattr(error, "error_details", None)
     if isinstance(details_attr, list):
@@ -91,12 +88,7 @@ def is_transient_error(exc: BaseException) -> bool:
             return True
         if status == 403:
             reasons = {r.lower() for r in extract_error_reasons(exc)}
-            if any(r in _RATE_LIMIT_REASONS for r in reasons):
-                return True
-            for r in reasons:
-                if "ratelimit" in r or "quota" in r or "resource_exhausted" in r:
-                    return True
-            return False
+            return any(r in _RATE_LIMIT_REASONS for r in reasons)
         return False
 
     network_transient_types = (

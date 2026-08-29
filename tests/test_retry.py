@@ -39,9 +39,6 @@ def test_is_transient_error_permanent_http_statuses(status: int) -> None:
     [
         "rateLimitExceeded",
         "userRateLimitExceeded",
-        "quotaExceeded",
-        "dailyLimitExceeded",
-        "RESOURCE_EXHAUSTED",
     ],
 )
 def test_is_transient_error_403_rate_limits(reason_str: str) -> None:
@@ -71,6 +68,10 @@ def test_is_transient_error_403_rate_limits(reason_str: str) -> None:
 @pytest.mark.parametrize(
     "reason_str",
     [
+        "quotaExceeded",
+        "dailyLimitExceeded",
+        "resource_exhausted",
+        "RESOURCE_EXHAUSTED",
         "forbidden",
         "insufficientPermissions",
         "accessNotConfigured",
@@ -78,7 +79,7 @@ def test_is_transient_error_403_rate_limits(reason_str: str) -> None:
         "accountDisabled",
     ],
 )
-def test_is_transient_error_403_non_quota_permanent(reason_str: str) -> None:
+def test_is_transient_error_403_non_retryable(reason_str: str) -> None:
     content = {
         "error": {
             "code": 403,
