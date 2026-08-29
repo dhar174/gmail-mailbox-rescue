@@ -332,6 +332,8 @@ class ExportService:
                                 error_message=str(exc),
                             )
                         )
+                    if cancel_event and cancel_event.is_set():
+                        return None
                     self._retry_policy.sleep_fn(delay)
                     if cancel_event and cancel_event.is_set():
                         return None
