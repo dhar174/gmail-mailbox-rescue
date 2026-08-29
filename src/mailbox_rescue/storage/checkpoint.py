@@ -14,6 +14,15 @@ class CompletedMessage:
     size_bytes: int
 
 
+@dataclass(frozen=True, slots=True)
+class FailedMessage:
+    message_id: str
+    error_type: str
+    error_message: str
+    attempt_count: int
+    last_failed_at: str
+
+
 class CheckpointStore:
     def __init__(self, database_path: Path) -> None:
         database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -70,10 +79,89 @@ class CheckpointStore:
                     completed_at,
                 ),
             )
+            connection.execute(
+                "DELETE FROM failed_messages WHERE message_id = ?",
+                (message.message_id,),
+            )
 
     def completed_count(self) -> int:
         with self._connect() as connection:
             row = connection.execute("SELECT COUNT(*) FROM completed_messages").fetchone()
+        return int(row[0])
+
+    def mark_failed(self, failure: FailedMessage) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO failed_messages (
+                    message_id, error_type, error_message, attempt_count, last_failed_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(message_id) DO UPDATE SET
+                    error_type = excluded.error_type,
+                    error_message = excluded.error_message,
+                    attempt_count = excluded.attempt_count,
+                    last_failed_at = excluded.last_failed_at
+                """,
+                (
+                    failure.message_id,
+                    failure.error_type,
+                    failure.error_message,
+                    failure.attempt_count,
+                    failure.last_failed_at,
+                ),
+            )
+
+    def clear_failure(self, message_id: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM failed_messages WHERE message_id = ?",
+                (message_id,),
+            )
+
+    def get_failure(self, message_id: str) -> FailedMessage | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT message_id, error_type, error_message, attempt_count, last_failed_at
+                FROM failed_messages
+                WHERE message_id = ?
+                """,
+                (message_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return FailedMessage(
+            message_id=row[0],
+            error_type=row[1],
+            error_message=row[2],
+            attempt_count=int(row[3]),
+            last_failed_at=row[4],
+        )
+
+    def list_failures(self) -> list[FailedMessage]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT message_id, error_type, error_message, attempt_count, last_failed_at
+                FROM failed_messages
+                ORDER BY last_failed_at ASC
+                """
+            ).fetchall()
+        return [
+            FailedMessage(
+                message_id=row[0],
+                error_type=row[1],
+                error_message=row[2],
+                attempt_count=int(row[3]),
+                last_failed_at=row[4],
+            )
+            for row in rows
+        ]
+
+    def failed_count(self) -> int:
+        with self._connect() as connection:
+            row = connection.execute("SELECT COUNT(*) FROM failed_messages").fetchone()
         return int(row[0])
 
     def _connect(self) -> sqlite3.Connection:
@@ -89,6 +177,17 @@ class CheckpointStore:
                     sha256 TEXT NOT NULL,
                     size_bytes INTEGER NOT NULL,
                     completed_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS failed_messages (
+                    message_id TEXT PRIMARY KEY,
+                    error_type TEXT NOT NULL,
+                    error_message TEXT NOT NULL,
+                    attempt_count INTEGER NOT NULL,
+                    last_failed_at TEXT NOT NULL
                 )
                 """
             )
