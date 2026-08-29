@@ -154,8 +154,10 @@ def test_retry_policy_delay_calculation() -> None:
         ("jitter", -1.0),
         ("base_delay", math.inf),
         ("base_delay", -math.inf),
+        ("max_delay", math.inf),
         ("max_delay", math.nan),
         ("jitter", math.inf),
+        ("jitter", math.nan),
     ],
 )
 def test_retry_policy_rejects_invalid_settings(field: str, value: float) -> None:
