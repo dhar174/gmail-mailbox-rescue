@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from mailbox_rescue.export.models import FatalStorageError
 from mailbox_rescue.export.mbox import write_mbox
+from mailbox_rescue.export.models import FatalStorageError
 from mailbox_rescue.storage.checkpoint import CompletedMessage
 
 
