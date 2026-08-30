@@ -272,6 +272,7 @@ class CheckpointStore:
                 for row in connection.execute("PRAGMA table_info(export_metadata)").fetchall()
             ]
             if columns and "id" not in columns:
+                connection.execute("BEGIN IMMEDIATE")
                 row = connection.execute(
                     """
                     SELECT account_email, export_scope, created_at, last_updated_at

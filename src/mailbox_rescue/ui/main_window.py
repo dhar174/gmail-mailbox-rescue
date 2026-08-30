@@ -259,11 +259,24 @@ class MainWindow(QMainWindow):
             )
             return
 
-        compatible, reason = check_resume_compatibility(
-            checkpoint_store=checkpoint_store,
-            account_email=self.mailbox_profile.email_address,
-            export_scope=selected_scope.value,
-        )
+        try:
+            compatible, reason = check_resume_compatibility(
+                checkpoint_store=checkpoint_store,
+                account_email=self.mailbox_profile.email_address,
+                export_scope=selected_scope.value,
+            )
+            has_prior_work = (
+                checkpoint_store.completed_count() > 0
+                or checkpoint_store.failed_count() > 0
+            )
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(
+                self,
+                "Storage Error",
+                f"Could not inspect export checkpoint database:\n{exc}",
+            )
+            return
+
         if not compatible:
             QMessageBox.warning(
                 self,
@@ -273,9 +286,6 @@ class MainWindow(QMainWindow):
             return
 
         # Explicitly confirm resume if prior work exists
-        has_prior_work = (
-            checkpoint_store.completed_count() > 0 or checkpoint_store.failed_count() > 0
-        )
         if has_prior_work:
             reply = QMessageBox.question(
                 self,
@@ -358,6 +368,9 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
+            if self._export_thread is None or not self._export_thread.isRunning():
+                event.accept()
+                return
             self._close_pending = True
             if self.cancel_event:
                 self.cancel_event.set()
