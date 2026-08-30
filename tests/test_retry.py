@@ -108,10 +108,7 @@ def test_is_transient_error_network_and_transport() -> None:
     assert is_transient_error(ssl.SSLError("SSL handshake failed")) is True
     assert is_transient_error(google.auth.exceptions.TransportError("Transport error")) is True
     assert is_transient_error(urllib.error.URLError("Connection refused")) is True
-    assert (
-        is_transient_error(urllib.error.URLError(TimeoutError("Connection timed out")))
-        is True
-    )
+    assert is_transient_error(urllib.error.URLError(TimeoutError("Connection timed out"))) is True
 
 
 def test_is_transient_error_rejects_filesystem_and_database_errors() -> None:

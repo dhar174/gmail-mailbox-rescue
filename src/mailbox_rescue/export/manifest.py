@@ -43,8 +43,14 @@ def write_manifest(
         # Ensure forward slashes for cross-platform portability
         rel_posix = Path(msg.relative_path).as_posix()
         # Refuse traversal/control-character paths with explicit failure
-        if "\n" in rel_posix or "\r" in rel_posix or resolve_safe_relative_path(output_root, rel_posix) is None:
-            raise ValueError(f"Unsafe relative path '{msg.relative_path}' cannot be written to manifest")
+        if (
+            "\n" in rel_posix
+            or "\r" in rel_posix
+            or resolve_safe_relative_path(output_root, rel_posix) is None
+        ):
+            raise ValueError(
+                f"Unsafe relative path '{msg.relative_path}' cannot be written to manifest"
+            )
         lines.append(f"{msg.sha256.lower()}  {rel_posix}\n")
 
     part_file.write_text("".join(lines), encoding="utf-8")

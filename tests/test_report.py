@@ -153,5 +153,33 @@ def test_generate_html_report_escapes_dynamic_html_content(tmp_path: Path) -> No
     assert "&lt;script&gt;alert(&#x27;xss&#x27;)&lt;/script&gt;@example.com" in html_content
     assert "&lt;msg_id_special_chars&gt;" in html_content
     assert "Error &amp; Co" in html_content
-    assert 'Failed with &quot;quoted text&quot; &amp; &lt;tags&gt;' in html_content
-    assert 'Warning with &lt;b&gt;bold&lt;/b&gt; &amp; &quot;quotes&quot;' in html_content
+    assert "Failed with &quot;quoted text&quot; &amp; &lt;tags&gt;" in html_content
+    assert "Warning with &lt;b&gt;bold&lt;/b&gt; &amp; &quot;quotes&quot;" in html_content
+
+
+def test_generate_html_report_verified_with_metadata_warnings(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+
+    meta = ExportMetadata(
+        account_email="dan@example.com",
+        export_scope="all_mail",
+        created_at="2026-08-28T12:00:00+00:00",
+        last_updated_at="2026-08-28T12:00:00+00:00",
+    )
+    result = ExportResult(
+        total_scanned=5,
+        completed_this_run=5,
+        skipped_completed=0,
+        failed=0,
+        cancelled=False,
+        archive_verified=True,
+        verified_files=5,
+        metadata_warnings=["Could not backfill metadata for message 'msg_1'."],
+    )
+
+    report_path = generate_html_report(root, result, meta, total_canonical_emls=5)
+    html_content = report_path.read_text(encoding="utf-8")
+
+    assert "VERIFIED WITH METADATA WARNINGS" in html_content
+    assert "Could not backfill metadata for message &#x27;msg_1&#x27;." in html_content

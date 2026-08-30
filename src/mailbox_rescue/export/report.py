@@ -48,13 +48,19 @@ def generate_html_report(
             f"Export completed with {result.failed:,} message(s) that could not be retrieved from Gmail. "
             "All rescued messages were verified successfully."
         )
+    elif result.metadata_warnings:
+        status_text = "VERIFIED WITH METADATA WARNINGS"
+        status_bg = "#fef7e0"
+        status_fg = "#b06000"
+        status_summary = (
+            "All discovered message contents were successfully exported and verified with SHA-256 integrity checks, "
+            "with metadata warnings noted below."
+        )
     else:
         status_text = "VERIFIED COMPLETE"
         status_bg = "#e6f4ea"
         status_fg = "#137333"
-        status_summary = (
-            "All discovered messages were successfully exported and verified with SHA-256 integrity checks."
-        )
+        status_summary = "All discovered messages were successfully exported and verified with SHA-256 integrity checks."
 
     # Render warnings section if present
     warnings_html = ""

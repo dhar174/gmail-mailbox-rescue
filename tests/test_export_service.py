@@ -47,9 +47,7 @@ class FakeGmailClient:
         labels: list[GmailLabel] | None = None,
     ) -> None:
         self.message_map = message_map or {}
-        self.message_ids = (
-            message_ids if message_ids is not None else list(self.message_map.keys())
-        )
+        self.message_ids = message_ids if message_ids is not None else list(self.message_map.keys())
         self.labels = (
             labels
             if labels is not None
@@ -459,7 +457,9 @@ def test_rate_limit_403_retried_and_permission_403_not_retried(tmp_path: Path) -
             "msg_perm": b"raw perm",
         }
     )
-    fake_client.get_raw_side_effects["msg_rate_limit"] = [rate_limit_err]  # 1 rate limit err then success
+    fake_client.get_raw_side_effects["msg_rate_limit"] = [
+        rate_limit_err
+    ]  # 1 rate limit err then success
     fake_client.get_raw_side_effects["msg_perm"] = [perm_err]  # Permanent 403
 
     policy, _ = _make_test_policy()
@@ -842,8 +842,12 @@ def test_backfill_database_error_raises_fatal_storage_error(tmp_path: Path) -> N
     service = ExportService(fake_client, store, policy)  # type: ignore[arg-type]
 
     with (
-        patch.object(store, "set_message_metadata", side_effect=sqlite3.DatabaseError("DB write failed")),
-        pytest.raises(FatalStorageError, match="Fatal database error backfilling metadata for 'msg_1'"),
+        patch.object(
+            store, "set_message_metadata", side_effect=sqlite3.DatabaseError("DB write failed")
+        ),
+        pytest.raises(
+            FatalStorageError, match="Fatal database error backfilling metadata for 'msg_1'"
+        ),
     ):
         service.run(output_root=tmp_path)
 
@@ -1000,7 +1004,10 @@ def test_finalization_builds_derived_artifacts_from_only_verified_messages(tmp_p
 
     # 3. messages.jsonl includes msg_good only
     jsonl_lines = [
-        line.strip() for line in (tmp_path / "metadata" / "messages.jsonl").read_text(encoding="utf-8").splitlines()
+        line.strip()
+        for line in (tmp_path / "metadata" / "messages.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
         if line.strip()
     ]
     assert len(jsonl_lines) == 1
@@ -1062,7 +1069,9 @@ def test_export_service_label_fetch_failure_degrades_gracefully(tmp_path: Path) 
     store = CheckpointStore(tmp_path / "checkpoint.sqlite3")
     fake_client = FakeGmailClient(message_map={"msg_1": b"raw 1"})
     # Fail list_labels with permanent 403
-    perm_403 = _make_http_error(403, reason="Forbidden", error_dict={"error": {"code": 403, "message": "No label access"}})
+    perm_403 = _make_http_error(
+        403, reason="Forbidden", error_dict={"error": {"code": 403, "message": "No label access"}}
+    )
     fake_client.list_labels_side_effects = [perm_403]
 
     policy, _ = _make_test_policy()
@@ -1083,7 +1092,9 @@ def test_export_service_label_fetch_failure_degrades_gracefully(tmp_path: Path) 
     assert "INBOX" in meta.labels_json
 
 
-def test_export_service_partial_export_generates_derived_artifacts_with_failures(tmp_path: Path) -> None:
+def test_export_service_partial_export_generates_derived_artifacts_with_failures(
+    tmp_path: Path,
+) -> None:
     store = CheckpointStore(tmp_path / "checkpoint.sqlite3")
     fake_client = FakeGmailClient(
         message_map={
@@ -1112,3 +1123,191 @@ def test_export_service_partial_export_generates_derived_artifacts_with_failures
     assert "PARTIAL EXPORT" in report_html
     assert "msg_fail" in report_html
 
+
+def test_cancel_before_canonical_mutation_preserves_derived_artifacts(tmp_path: Path) -> None:
+    store = CheckpointStore(tmp_path / "export.sqlite3")
+    store.set_metadata(account_email="alice@example.com", export_scope="all_mail")
+    fake_client = FakeGmailClient(message_map={"msg_1": b"raw 1"})
+    policy, _ = _make_test_policy()
+    service = ExportService(fake_client, store, policy)  # type: ignore[arg-type]
+
+    # Initial full export
+    res1 = service.run(output_root=tmp_path)
+    assert res1.completed_this_run == 1
+    assert (tmp_path / "mailbox.mbox").is_file()
+    assert (tmp_path / "checksums.sha256").is_file()
+    assert (tmp_path / "metadata" / "messages.jsonl").is_file()
+    assert (tmp_path / "export-report.html").is_file()
+
+    # Cancel before scan begins
+    cancel_ev = threading.Event()
+    cancel_ev.set()
+    res2 = service.run(output_root=tmp_path, cancel_event=cancel_ev)
+    assert res2.cancelled is True
+
+    # Derived artifacts must still exist
+    assert (tmp_path / "mailbox.mbox").is_file()
+    assert (tmp_path / "checksums.sha256").is_file()
+    assert (tmp_path / "metadata" / "messages.jsonl").is_file()
+    assert (tmp_path / "export-report.html").is_file()
+
+
+def test_cancel_after_canonical_mutation_invalidates_derived_artifacts_and_resumes_cleanly(
+    tmp_path: Path,
+) -> None:
+    store = CheckpointStore(tmp_path / "export.sqlite3")
+    store.set_metadata(account_email="alice@example.com", export_scope="all_mail")
+
+    raw_1 = b"From: a@example.com\r\nSubject: Test 1\r\n\r\nBody 1\r\n"
+    raw_2 = b"From: b@example.com\r\nSubject: Test 2\r\n\r\nBody 2\r\n"
+
+    fake_client = FakeGmailClient(message_map={"msg_1": raw_1})
+    policy, _ = _make_test_policy()
+    service = ExportService(fake_client, store, policy)  # type: ignore[arg-type]
+
+    # 1. Initial full export of msg_1
+    res1 = service.run(output_root=tmp_path)
+    assert res1.completed_this_run == 1
+    assert (tmp_path / "mailbox.mbox").is_file()
+    assert (tmp_path / "checksums.sha256").is_file()
+    assert (tmp_path / "metadata" / "messages.jsonl").is_file()
+    assert (tmp_path / "export-report.html").is_file()
+
+    # 2. Add msg_2, cancel right after msg_2 is written
+    fake_client.message_map["msg_2"] = raw_2
+    fake_client.message_ids = ["msg_1", "msg_2"]
+
+    cancel_ev = threading.Event()
+
+    def on_progress(p: ExportProgress) -> None:
+        if p.phase == ExportPhase.MESSAGE_COMPLETED and p.message_id == "msg_2":
+            cancel_ev.set()
+
+    res2 = service.run(
+        output_root=tmp_path,
+        cancel_event=cancel_ev,
+        progress_callback=on_progress,
+    )
+    assert res2.cancelled is True
+    assert res2.completed_this_run == 1
+
+    # Canonical msg_2 is written and checkpointed
+    assert (tmp_path / "messages" / "msg_2.eml").is_file()
+    assert store.is_completed("msg_2")
+
+    # Stale derived artifacts are invalidated and removed!
+    assert not (tmp_path / "mailbox.mbox").exists()
+    assert not (tmp_path / "checksums.sha256").exists()
+    assert not (tmp_path / "metadata" / "messages.jsonl").exists()
+    assert not (tmp_path / "export-report.html").exists()
+
+    # 3. Resume export to completion
+    res3 = service.run(output_root=tmp_path)
+    assert res3.cancelled is False
+    assert res3.completed_this_run == 0
+    assert res3.skipped_completed == 2
+    assert res3.archive_verified is True
+
+    # Derived artifacts are generated cleanly
+    assert (tmp_path / "mailbox.mbox").is_file()
+    assert (tmp_path / "checksums.sha256").is_file()
+    assert (tmp_path / "metadata" / "messages.jsonl").is_file()
+    assert (tmp_path / "export-report.html").is_file()
+
+    # Check for no duplicate MBOX messages
+    read_mbox = mailbox.mbox(str(tmp_path / "mailbox.mbox"))
+    try:
+        assert len(read_mbox) == 2
+    finally:
+        read_mbox.close()
+
+
+def test_resume_failed_label_lookup_preserves_existing_labels_snapshot(tmp_path: Path) -> None:
+    store = CheckpointStore(tmp_path / "export.sqlite3")
+    store.set_metadata(account_email="alice@example.com", export_scope="all_mail")
+
+    fake_client = FakeGmailClient(
+        message_map={"msg_1": b"raw 1"},
+        labels=[GmailLabel(id="INBOX", name="INBOX", type="system")],
+    )
+    policy, _ = _make_test_policy()
+    service = ExportService(fake_client, store, policy)  # type: ignore[arg-type]
+
+    # Initial export writes labels.json with INBOX
+    service.run(output_root=tmp_path)
+    labels_file = tmp_path / "metadata" / "labels.json"
+    assert labels_file.is_file()
+    initial_labels_json = labels_file.read_text(encoding="utf-8")
+    assert "INBOX" in initial_labels_json
+
+    # Second run: add msg_2 and fail list_labels
+    fake_client.message_map["msg_2"] = b"raw 2"
+    fake_client.message_ids = ["msg_1", "msg_2"]
+    fake_client.list_labels_side_effects = [_make_http_error(403, reason="Forbidden")]
+
+    res2 = service.run(output_root=tmp_path)
+    assert res2.completed_this_run == 1
+    assert len(res2.metadata_warnings) == 1
+    assert "Failed to fetch Gmail label names" in res2.metadata_warnings[0]
+
+    # labels.json was preserved and not overwritten with empty []
+    assert labels_file.read_text(encoding="utf-8") == initial_labels_json
+
+
+def test_incomplete_metadata_backfill_failure_preserves_verified_eml_and_reports_warning(
+    tmp_path: Path,
+) -> None:
+    store = CheckpointStore(tmp_path / "export.sqlite3")
+    store.set_metadata(account_email="alice@example.com", export_scope="all_mail")
+
+    raw_1 = b"From: a@example.com\r\nSubject: Intact EML\r\n\r\nBody text\r\n"
+    eml_file = tmp_path / "messages" / "msg_1.eml"
+    eml_file.parent.mkdir(parents=True)
+    eml_file.write_bytes(raw_1)
+
+    # Checkpoint has CompletedMessage with missing MessageMetadata (pre-#5 archive)
+    store.mark_completed(
+        CompletedMessage(
+            message_id="msg_1",
+            relative_path="messages/msg_1.eml",
+            sha256=hashlib.sha256(raw_1).hexdigest(),
+            size_bytes=len(raw_1),
+        )
+    )
+
+    fake_client = FakeGmailClient(
+        message_map={},  # msg_1 not in message_map -> 404 Not Found on fetch
+        message_ids=["msg_1"],
+    )
+    policy, _ = _make_test_policy()
+    service = ExportService(fake_client, store, policy)  # type: ignore[arg-type]
+
+    result = service.run(output_root=tmp_path)
+
+    # 1. EML is intact and verified
+    assert result.failed == 0
+    assert result.skipped_completed == 1
+    assert result.archive_verified is True
+    assert result.verified_files == 1
+
+    # 2. Metadata warning is recorded
+    assert len(result.metadata_warnings) >= 1
+    assert any(
+        "Could not backfill metadata for message 'msg_1'" in w for w in result.metadata_warnings
+    )
+
+    # 3. MBOX and manifest include the verified message
+    read_mbox = mailbox.mbox(str(tmp_path / "mailbox.mbox"))
+    try:
+        assert len(read_mbox) == 1
+    finally:
+        read_mbox.close()
+    assert "messages/msg_1.eml" in (tmp_path / "checksums.sha256").read_text(encoding="utf-8")
+
+    # 4. messages.jsonl excludes msg_1 due to incomplete metadata
+    messages_jsonl = tmp_path / "metadata" / "messages.jsonl"
+    assert messages_jsonl.read_text(encoding="utf-8").strip() == ""
+
+    # 5. Report shows VERIFIED WITH METADATA WARNINGS
+    report_html = (tmp_path / "export-report.html").read_text(encoding="utf-8")
+    assert "VERIFIED WITH METADATA WARNINGS" in report_html

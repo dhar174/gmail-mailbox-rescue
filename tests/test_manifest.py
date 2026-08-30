@@ -64,8 +64,12 @@ def test_verify_manifest_integrity_and_tamper_detection(tmp_path: Path) -> None:
     h1 = hashlib.sha256(p1).hexdigest()
     h2 = hashlib.sha256(p2).hexdigest()
 
-    m1 = CompletedMessage(message_id="m1", relative_path="messages/m1.eml", sha256=h1, size_bytes=len(p1))
-    m2 = CompletedMessage(message_id="m2", relative_path="messages/m2.eml", sha256=h2, size_bytes=len(p2))
+    m1 = CompletedMessage(
+        message_id="m1", relative_path="messages/m1.eml", sha256=h1, size_bytes=len(p1)
+    )
+    m2 = CompletedMessage(
+        message_id="m2", relative_path="messages/m2.eml", sha256=h2, size_bytes=len(p2)
+    )
 
     write_manifest(root, [m1, m2])
 

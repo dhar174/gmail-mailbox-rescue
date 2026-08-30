@@ -425,7 +425,9 @@ class CheckpointStore:
                     connection.execute("DROP TABLE _legacy_export_metadata")
                 except Exception:
                     connection.execute("DROP TABLE IF EXISTS export_metadata")
-                    connection.execute("ALTER TABLE _legacy_export_metadata RENAME TO export_metadata")
+                    connection.execute(
+                        "ALTER TABLE _legacy_export_metadata RENAME TO export_metadata"
+                    )
                     raise
             else:
                 connection.execute(

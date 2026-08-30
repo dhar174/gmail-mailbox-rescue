@@ -2,6 +2,9 @@ import hashlib
 import mailbox
 from pathlib import Path
 
+import pytest
+
+from mailbox_rescue.export.models import FatalStorageError
 from mailbox_rescue.export.mbox import write_mbox
 from mailbox_rescue.storage.checkpoint import CompletedMessage
 
@@ -124,3 +127,88 @@ def test_mbox_resilient_to_malformed_headers(tmp_path: Path) -> None:
         assert len(read_mbox) == 1
     finally:
         read_mbox.close()
+
+
+def test_write_mbox_file_disappears_raises_fatal_storage_error_and_preserves_old_mbox(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "archive"
+    messages_dir = root / "messages"
+    messages_dir.mkdir(parents=True)
+
+    raw1 = b"From: a@example.com\r\nSubject: Msg 1\r\n\r\nBody 1\r\n"
+    (messages_dir / "msg1.eml").write_bytes(raw1)
+    m1 = CompletedMessage(
+        message_id="msg1",
+        relative_path="messages/msg1.eml",
+        sha256=hashlib.sha256(raw1).hexdigest(),
+        size_bytes=len(raw1),
+    )
+
+    # 1. Initial successful write
+    mbox_path = write_mbox(root, [m1])
+    assert mbox_path.exists()
+
+    # 2. Add m2 which does not exist on disk
+    m2_missing = CompletedMessage(
+        message_id="msg2",
+        relative_path="messages/msg2.eml",
+        sha256="0" * 64,
+        size_bytes=100,
+    )
+
+    with pytest.raises(FatalStorageError, match="missing or unsafe"):
+        write_mbox(root, [m1, m2_missing])
+
+    # Previous mbox remains intact with 1 message
+    read_mbox = mailbox.mbox(str(mbox_path))
+    try:
+        assert len(read_mbox) == 1
+        assert read_mbox[0]["subject"] == "Msg 1"
+    finally:
+        read_mbox.close()
+    assert not (root / "mailbox.mbox.part").exists()
+
+
+def test_write_mbox_tampered_hash_raises_fatal_storage_error_and_preserves_old_mbox(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "archive"
+    messages_dir = root / "messages"
+    messages_dir.mkdir(parents=True)
+
+    raw1 = b"From: a@example.com\r\nSubject: Msg 1\r\n\r\nBody 1\r\n"
+    (messages_dir / "msg1.eml").write_bytes(raw1)
+    m1 = CompletedMessage(
+        message_id="msg1",
+        relative_path="messages/msg1.eml",
+        sha256=hashlib.sha256(raw1).hexdigest(),
+        size_bytes=len(raw1),
+    )
+
+    # 1. Initial successful write
+    mbox_path = write_mbox(root, [m1])
+
+    # 2. Add m2 whose on-disk content differs from recorded hash
+    raw2_expected = b"From: b@example.com\r\nSubject: Msg 2\r\n\r\nBody 2\r\n"
+    raw2_tampered = b"From: b@example.com\r\nSubject: TAMPER\r\n\r\nBody 2\r\n"
+    (messages_dir / "msg2.eml").write_bytes(raw2_tampered)
+
+    m2_tampered = CompletedMessage(
+        message_id="msg2",
+        relative_path="messages/msg2.eml",
+        sha256=hashlib.sha256(raw2_expected).hexdigest(),
+        size_bytes=len(raw2_tampered),
+    )
+
+    with pytest.raises(FatalStorageError, match="SHA-256 mismatch"):
+        write_mbox(root, [m1, m2_tampered])
+
+    # Previous mbox remains intact with 1 message
+    read_mbox = mailbox.mbox(str(mbox_path))
+    try:
+        assert len(read_mbox) == 1
+        assert read_mbox[0]["subject"] == "Msg 1"
+    finally:
+        read_mbox.close()
+    assert not (root / "mailbox.mbox.part").exists()

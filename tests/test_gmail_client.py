@@ -56,9 +56,7 @@ def test_decode_raw_message_omitted_padding(payload: bytes) -> None:
 
 def test_decode_raw_message_preserves_representative_rfc822_email() -> None:
     # Gmail API returns unpadded Base64URL string in the 'raw' field
-    encoded_unpadded = (
-        base64.urlsafe_b64encode(SAMPLE_RFC822_EMAIL).decode("ascii").rstrip("=")
-    )
+    encoded_unpadded = base64.urlsafe_b64encode(SAMPLE_RFC822_EMAIL).decode("ascii").rstrip("=")
 
     decoded = decode_raw_message(encoded_unpadded)
     assert decoded == SAMPLE_RFC822_EMAIL
@@ -66,13 +64,12 @@ def test_decode_raw_message_preserves_representative_rfc822_email() -> None:
 
 def test_gmail_client_get_raw_message_delegates_to_decoder() -> None:
     mock_service = MagicMock()
-    encoded_unpadded = (
-        base64.urlsafe_b64encode(SAMPLE_RFC822_EMAIL).decode("ascii").rstrip("=")
-    )
+    encoded_unpadded = base64.urlsafe_b64encode(SAMPLE_RFC822_EMAIL).decode("ascii").rstrip("=")
 
     messages_resource = mock_service.users.return_value.messages.return_value
     messages_resource.get.return_value.execute.return_value = {
         "id": "msg_xyz_789",
+        "threadId": "thread_xyz_789",
         "raw": encoded_unpadded,
     }
 
@@ -91,9 +88,7 @@ def test_gmail_client_get_raw_message_delegates_to_decoder() -> None:
 
 def test_gmail_client_get_export_message_single_fetch_captures_all_fields() -> None:
     mock_service = MagicMock()
-    encoded_unpadded = (
-        base64.urlsafe_b64encode(SAMPLE_RFC822_EMAIL).decode("ascii").rstrip("=")
-    )
+    encoded_unpadded = base64.urlsafe_b64encode(SAMPLE_RFC822_EMAIL).decode("ascii").rstrip("=")
 
     messages_resource = mock_service.users.return_value.messages.return_value
     messages_resource.get.return_value.execute.return_value = {
@@ -126,8 +121,10 @@ def test_gmail_client_get_export_message_defaults_missing_optional_fields() -> N
     encoded_unpadded = base64.urlsafe_b64encode(b"simple payload").decode("ascii")
 
     messages_resource = mock_service.users.return_value.messages.return_value
+    # Omits labelIds (which is optional), but provides required id, threadId, and raw
     messages_resource.get.return_value.execute.return_value = {
         "id": "msg_only_id",
+        "threadId": "thread_only_id",
         "raw": encoded_unpadded,
     }
 
@@ -137,9 +134,40 @@ def test_gmail_client_get_export_message_defaults_missing_optional_fields() -> N
     export_msg = client.get_export_message("msg_only_id")
 
     assert export_msg.message_id == "msg_only_id"
-    assert export_msg.thread_id == ""
+    assert export_msg.thread_id == "thread_only_id"
     assert export_msg.label_ids == ()
     assert export_msg.raw_bytes == b"simple payload"
+
+
+def test_gmail_client_get_export_message_missing_raw_raises_keyerror() -> None:
+    mock_service = MagicMock()
+    messages_resource = mock_service.users.return_value.messages.return_value
+    messages_resource.get.return_value.execute.return_value = {
+        "id": "msg_no_raw",
+        "threadId": "thread_123",
+    }
+
+    client = object.__new__(GmailClient)
+    client._service = mock_service
+
+    with pytest.raises(KeyError, match="raw"):
+        client.get_export_message("msg_no_raw")
+
+
+def test_gmail_client_get_export_message_missing_thread_id_raises_keyerror() -> None:
+    mock_service = MagicMock()
+    encoded_unpadded = base64.urlsafe_b64encode(b"simple payload").decode("ascii")
+    messages_resource = mock_service.users.return_value.messages.return_value
+    messages_resource.get.return_value.execute.return_value = {
+        "id": "msg_no_thread",
+        "raw": encoded_unpadded,
+    }
+
+    client = object.__new__(GmailClient)
+    client._service = mock_service
+
+    with pytest.raises(KeyError, match="threadId"):
+        client.get_export_message("msg_no_thread")
 
 
 def test_gmail_client_list_labels_system_and_unicode_user_labels() -> None:

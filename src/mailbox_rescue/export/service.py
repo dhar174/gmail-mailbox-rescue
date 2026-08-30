@@ -19,7 +19,10 @@ from googleapiclient.errors import HttpError
 from mailbox_rescue.export.eml import write_eml
 from mailbox_rescue.export.manifest import write_manifest
 from mailbox_rescue.export.mbox import write_mbox
-from mailbox_rescue.export.metadata import write_portable_metadata
+from mailbox_rescue.export.metadata import (
+    is_metadata_complete,
+    write_portable_metadata,
+)
 from mailbox_rescue.export.models import (
     ExportFailure,
     ExportPhase,
@@ -59,6 +62,29 @@ _GMAIL_API_EXCEPTIONS = (
 )
 
 
+def invalidate_derived_archive(output_root: Path) -> None:
+    """
+    Remove derived archive artifacts when canonical state is mutated during export.
+    Preserves canonical messages/*.eml, export.sqlite3, metadata/account.json, and metadata/labels.json.
+    """
+    derived_files = [
+        output_root / "mailbox.mbox",
+        output_root / "mailbox.mbox.part",
+        output_root / "checksums.sha256",
+        output_root / "checksums.sha256.part",
+        output_root / "export-report.html",
+        output_root / "export-report.html.part",
+        output_root / "metadata" / "messages.jsonl",
+        output_root / "metadata" / "messages.jsonl.part",
+    ]
+    for path in derived_files:
+        try:
+            if path.is_file() or path.is_symlink():
+                path.unlink()
+        except OSError:
+            pass
+
+
 class ExportService:
     def __init__(
         self,
@@ -87,6 +113,14 @@ class ExportService:
                 failed=0,
                 cancelled=True,
             )
+
+        derived_invalidated = False
+
+        def _mark_mutated() -> None:
+            nonlocal derived_invalidated
+            if not derived_invalidated:
+                invalidate_derived_archive(output_root)
+                derived_invalidated = True
 
         # Phase 1: Scanning
         if progress_callback:
@@ -188,8 +222,8 @@ class ExportService:
                             f"Fatal database error reading message metadata for '{msg_id}': {db_exc}"
                         ) from db_exc
 
-                    if existing_meta is not None:
-                        # Message is valid and has metadata -> Skip
+                    if is_metadata_complete(existing_meta):
+                        # Message is valid and has complete metadata -> Skip
                         skipped_completed += 1
                         if progress_callback:
                             progress_callback(
@@ -205,8 +239,8 @@ class ExportService:
                             )
                         continue
 
-                    # Pre-#5 archive: EML is intact but message_metadata is missing.
-                    # Backfill metadata without rewriting the already-verified EML.
+                    # Pre-#5 or incomplete metadata: EML is intact but metadata needs backfilling.
+                    # Attempt to backfill metadata without rewriting the already-verified EML.
                     export_msg, fetch_error, attempts_made, cancelled = (
                         self._fetch_export_message_with_retry(
                             message_id=msg_id,
@@ -243,48 +277,28 @@ class ExportService:
                         )
 
                     if fetch_error is not None or export_msg is None:
-                        # Fetch failed: record failure and continue
-                        error_type = type(fetch_error).__name__
-                        error_message = str(fetch_error)
-                        failure = ExportFailure(
-                            message_id=msg_id,
-                            error_type=error_type,
-                            error_message=error_message,
-                            attempt_count=attempts_made,
+                        # Backfill fetch failed: record metadata warning and preserve verified EML
+                        metadata_warnings.append(
+                            f"Could not backfill metadata for message '{msg_id}' ({fetch_error or 'missing'}). "
+                            "Message content remains verified."
                         )
-                        failures.append(failure)
-                        try:
-                            self._checkpoint_store.mark_failed(
-                                FailedMessage(
-                                    message_id=msg_id,
-                                    error_type=error_type,
-                                    error_message=error_message,
-                                    attempt_count=attempts_made,
-                                    last_failed_at=datetime.now(UTC).isoformat(),
-                                )
-                            )
-                        except sqlite3.Error as db_exc:
-                            raise FatalStorageError(
-                                f"Failed to record message failure in checkpoint database: {db_exc}"
-                            ) from db_exc
-
+                        skipped_completed += 1
                         if progress_callback:
                             progress_callback(
                                 ExportProgress(
-                                    phase=ExportPhase.MESSAGE_FAILED,
+                                    phase=ExportPhase.MESSAGE_SKIPPED,
                                     total_messages=total_scanned,
                                     current_index=idx,
                                     message_id=msg_id,
                                     completed_this_run=completed_this_run,
                                     skipped_completed=skipped_completed,
                                     failed_this_run=len(failures),
-                                    attempt=attempts_made,
-                                    error_message=error_message,
                                 )
                             )
                         continue
 
                     # Persist backfilled metadata
+                    _mark_mutated()
                     if export_msg.message_id and export_msg.message_id != msg_id:
                         metadata_warnings.append(
                             f"Inconsistent Gmail API message ID during metadata backfill: requested '{msg_id}', received '{export_msg.message_id}'"
@@ -353,6 +367,7 @@ class ExportService:
                 )
 
             if fetch_error is not None or export_msg is None:
+                _mark_mutated()
                 error_type = type(fetch_error).__name__
                 error_message = str(fetch_error)
                 failure = ExportFailure(
@@ -395,6 +410,7 @@ class ExportService:
                 continue
 
             # Write .eml atomically to disk
+            _mark_mutated()
             try:
                 written = write_eml(output_root, msg_id, export_msg.raw_bytes)
             except OSError as fs_exc:
@@ -440,6 +456,28 @@ class ExportService:
                 )
 
         # Phase 3: Archive Verification and Derived Artifacts Generation
+        if cancel_event and cancel_event.is_set():
+            if progress_callback:
+                progress_callback(
+                    ExportProgress(
+                        phase=ExportPhase.CANCELLED,
+                        total_messages=total_scanned,
+                        current_index=total_scanned,
+                        completed_this_run=completed_this_run,
+                        skipped_completed=skipped_completed,
+                        failed_this_run=len(failures),
+                    )
+                )
+            return ExportResult(
+                total_scanned=total_scanned,
+                completed_this_run=completed_this_run,
+                skipped_completed=skipped_completed,
+                failed=len(failures),
+                cancelled=True,
+                failures=failures,
+                metadata_warnings=metadata_warnings,
+            )
+
         verification_result = verify_archive(output_root, self._checkpoint_store)
         all_completed = self._checkpoint_store.list_completed()
         verified_messages = verification_result.verified_messages
@@ -450,6 +488,7 @@ class ExportService:
                 self._checkpoint_store,
                 labels_list,
                 completed_messages=verified_messages,
+                warnings_collector=metadata_warnings,
             )
             write_manifest(output_root, verified_messages)
             write_mbox(output_root, verified_messages)
@@ -507,11 +546,11 @@ class ExportService:
         self,
         message_id: str,
         export_msg: GmailExportMessage,
-        labels_map: dict[str, GmailLabel],
+        labels_map: dict[str, GmailLabel] | None,
     ) -> MessageMetadata:
         labels_data: list[dict[str, str]] = []
         for lid in export_msg.label_ids:
-            if lid in labels_map:
+            if labels_map and lid in labels_map:
                 labels_data.append({"id": lid, "name": labels_map[lid].name})
             else:
                 labels_data.append({"id": lid})
@@ -527,11 +566,11 @@ class ExportService:
         self,
         cancel_event: threading.Event | None,
         progress_callback: Callable[[ExportProgress], None] | None,
-    ) -> tuple[list[GmailLabel], dict[str, GmailLabel], list[str], bool]:
+    ) -> tuple[list[GmailLabel] | None, dict[str, GmailLabel] | None, list[str], bool]:
         attempt = 1
         while True:
             if cancel_event and cancel_event.is_set():
-                return [], {}, [], True
+                return None, None, [], True
 
             try:
                 labels = self._gmail_client.list_labels()
@@ -549,17 +588,17 @@ class ExportService:
                             )
                         )
                     if cancel_event and cancel_event.is_set():
-                        return [], {}, [], True
+                        return None, None, [], True
                     self._retry_policy.sleep_fn(delay)
                     if cancel_event and cancel_event.is_set():
-                        return [], {}, [], True
+                        return None, None, [], True
                     attempt += 1
                 else:
                     warning = (
                         f"Failed to fetch Gmail label names ({exc}). "
                         "Label IDs will be preserved without names."
                     )
-                    return [], {}, [warning], False
+                    return None, None, [warning], False
 
     def _scan_message_ids(
         self,

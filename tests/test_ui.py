@@ -458,9 +458,7 @@ def test_progress_updates_ui_phases(qapp: object, tmp_path: Path) -> None:
     assert window.progress_status_label.text() == "Scanning mailbox..."
 
     # 2. Scan complete
-    window._on_export_progress(
-        ExportProgress(phase=ExportPhase.SCAN_COMPLETE, total_messages=150)
-    )
+    window._on_export_progress(ExportProgress(phase=ExportPhase.SCAN_COMPLETE, total_messages=150))
     assert window.progress_bar.maximum() == 150
     assert window.progress_bar.value() == 0
     assert "150 messages" in window.progress_status_label.text()
@@ -520,6 +518,32 @@ def test_export_completed_full_success_updates_ui(qapp: object, tmp_path: Path) 
     assert window.cancel_button.isEnabled() is False
 
 
+def test_export_completed_with_metadata_warnings_updates_ui(qapp: object, tmp_path: Path) -> None:
+    window = _create_test_window(tmp_path)
+    window.destination_path = str(tmp_path)
+
+    result = ExportResult(
+        total_scanned=50,
+        completed_this_run=50,
+        skipped_completed=0,
+        failed=0,
+        cancelled=False,
+        archive_verified=True,
+        verified_files=50,
+        metadata_warnings=["Could not backfill metadata for message 'msg_1'."],
+    )
+    window._on_export_completed(result)
+
+    assert (
+        window.progress_status_label.text()
+        == "Export complete and verified, with metadata warnings."
+    )
+    assert "Saved: 50" in window.progress_detail_label.text()
+    assert window.progress_bar.value() == 50
+    assert window.connect_button.isEnabled() is True
+    assert window.cancel_button.isEnabled() is False
+
+
 def test_export_completed_partial_success_updates_ui(qapp: object, tmp_path: Path) -> None:
     window = _create_test_window(tmp_path)
     window.destination_path = str(tmp_path)
@@ -567,8 +591,7 @@ def test_export_completed_verification_failed_updates_ui(qapp: object, tmp_path:
     window._on_export_completed(result)
 
     assert (
-        window.progress_status_label.text()
-        == "Export completed, but archive verification failed."
+        window.progress_status_label.text() == "Export completed, but archive verification failed."
     )
     assert window.connect_button.isEnabled() is True
 
@@ -615,9 +638,7 @@ def test_export_failed_fatal_error_updates_ui(
     assert window.connect_button.isEnabled() is True
 
 
-def test_cancel_button_sets_event_and_updates_ui(
-    qapp: object, tmp_path: Path
-) -> None:
+def test_cancel_button_sets_event_and_updates_ui(qapp: object, tmp_path: Path) -> None:
     window = _create_test_window(tmp_path)
     window.destination_path = str(tmp_path)
     window.cancel_event = threading.Event()
@@ -729,9 +750,7 @@ def test_export_lifecycle_and_reusability(
     assert window.start_button.isEnabled() is True
 
 
-def test_open_export_folder(
-    qapp: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_open_export_folder(qapp: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     window = _create_test_window(tmp_path)
     export_dir = tmp_path / "my_backup"
     export_dir.mkdir(parents=True, exist_ok=True)
@@ -774,13 +793,11 @@ def test_full_ui_export_flow_and_resume(
     mock_client = MagicMock(spec=GmailClient)
     mock_client.list_labels.return_value = [GmailLabel(id="INBOX", name="INBOX", type="system")]
     mock_client.iter_message_ids.return_value = iter(["msg_alpha", "msg_beta"])
-    mock_client.get_export_message.side_effect = (
-        lambda msg_id: GmailExportMessage(
-            message_id=msg_id,
-            thread_id=f"th_{msg_id}",
-            label_ids=("INBOX",),
-            raw_bytes=f"From: test@example.com\r\nSubject: {msg_id}\r\n\r\nBody".encode(),
-        )
+    mock_client.get_export_message.side_effect = lambda msg_id: GmailExportMessage(
+        message_id=msg_id,
+        thread_id=f"th_{msg_id}",
+        label_ids=("INBOX",),
+        raw_bytes=f"From: test@example.com\r\nSubject: {msg_id}\r\n\r\nBody".encode(),
     )
 
     window.gmail_client = mock_client

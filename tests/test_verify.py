@@ -27,7 +27,24 @@ def test_resolve_safe_relative_path_valid_and_traversal(tmp_path: Path) -> None:
     assert resolve_safe_relative_path(root, "../../etc/passwd") is None
     assert resolve_safe_relative_path(root, "messages/../../outside.txt") is None
 
-    # Absolute path attempts
+    # POSIX absolute path attempts
+    assert resolve_safe_relative_path(root, "/absolute/messages/a.eml") is None
+    assert resolve_safe_relative_path(root, "/messages/a.eml") is None
+
+    # Windows drive and UNC absolute path attempts (must be rejected on all platforms)
+    assert resolve_safe_relative_path(root, r"C:\archive\messages\a.eml") is None
+    assert resolve_safe_relative_path(root, "C:/archive/messages/a.eml") is None
+    assert resolve_safe_relative_path(root, r"\\server\share\a.eml") is None
+    assert resolve_safe_relative_path(root, "//server/share/a.eml") is None
+    assert resolve_safe_relative_path(root, "C:messages/a.eml") is None
+    assert resolve_safe_relative_path(root, r"\messages\a.eml") is None
+
+    # Control characters
+    assert resolve_safe_relative_path(root, "messages/bad\nname.eml") is None
+    assert resolve_safe_relative_path(root, "messages/bad\rname.eml") is None
+    assert resolve_safe_relative_path(root, "messages/bad\0name.eml") is None
+
+    # Absolute path attempts with real outside dir
     outside_dir = tmp_path / "other"
     outside_dir.mkdir()
     assert resolve_safe_relative_path(root, str(outside_dir / "file.txt")) is None

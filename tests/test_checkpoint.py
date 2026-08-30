@@ -8,6 +8,7 @@ from mailbox_rescue.storage.checkpoint import (
     CompletedMessage,
     ExportMetadata,
     FailedMessage,
+    MessageMetadata,
     check_resume_compatibility,
 )
 
@@ -388,14 +389,13 @@ def test_legacy_metadata_migration_failure_preserves_original_metadata(
 
     # Verify that the original legacy table export_metadata was restored and data was preserved
     with sqlite3.connect(db_path) as conn:
-        columns = [
-            row[1]
-            for row in conn.execute("PRAGMA table_info(export_metadata)").fetchall()
-        ]
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(export_metadata)").fetchall()]
         assert "id" not in columns
         assert "account_email" in columns
 
-        row = conn.execute("SELECT account_email, export_scope, created_at FROM export_metadata").fetchone()
+        row = conn.execute(
+            "SELECT account_email, export_scope, created_at FROM export_metadata"
+        ).fetchone()
         assert row is not None
         assert row[0] == "legacy_user@example.com"
         assert row[1] == "all_mail"
@@ -520,7 +520,30 @@ def test_checkpoint_metadata_failure_rolls_back_completed_and_preserves_failure(
     assert store.failed_count() == 1
 
 
+def test_checkpoint_mark_completed_binds_metadata_to_completed_message_id(tmp_path: Path) -> None:
+    store = CheckpointStore(tmp_path / "export.sqlite3")
 
+    completed = CompletedMessage(
+        message_id="msg_canonical_A",
+        relative_path="messages/msg_canonical_A.eml",
+        sha256="a" * 64,
+        size_bytes=100,
+    )
+    meta = MessageMetadata(
+        message_id="msg_mismatched_B",
+        thread_id="thread_123",
+        labels_json='[{"id": "INBOX"}]',
+        captured_at="2026-08-28T12:00:00+00:00",
+    )
 
+    store.mark_completed(completed, message_metadata=meta)
 
+    # Metadata is stored canonically under msg_canonical_A
+    stored_meta = store.get_message_metadata("msg_canonical_A")
+    assert stored_meta is not None
+    assert stored_meta.message_id == "msg_canonical_A"
+    assert stored_meta.thread_id == "thread_123"
 
+    # No orphan msg_mismatched_B record exists
+    assert store.get_message_metadata("msg_mismatched_B") is None
+    assert not store.is_completed("msg_mismatched_B")

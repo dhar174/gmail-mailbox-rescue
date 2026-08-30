@@ -95,15 +95,12 @@ class GmailClient:
 
     def get_export_message(self, message_id: str) -> GmailExportMessage:
         message = (
-            self._service.users()
-            .messages()
-            .get(userId="me", id=message_id, format="raw")
-            .execute()
+            self._service.users().messages().get(userId="me", id=message_id, format="raw").execute()
         )
         raw_encoded = message["raw"]
         return GmailExportMessage(
             message_id=message.get("id", message_id),
-            thread_id=message.get("threadId", ""),
+            thread_id=message["threadId"],
             label_ids=tuple(message.get("labelIds") or ()),
             raw_bytes=decode_raw_message(raw_encoded),
         )
