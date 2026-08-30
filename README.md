@@ -71,11 +71,10 @@ For development, this client can be replaced later with an OAuth client approved
 
 ```text
 Mailbox-Backup/
+├── export.sqlite3        # resume checkpoint database
 ├── messages/
 │   ├── <gmail-message-id>.eml
 │   └── ...
-├── metadata/
-│   └── checkpoint.sqlite3
 ├── mailbox.mbox          # later milestone
 └── export-report.html    # later milestone
 ```

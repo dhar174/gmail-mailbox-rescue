@@ -159,6 +159,17 @@ class MainWindow(QMainWindow):
         except (OSError, ValueError, RuntimeError):
             return None
 
+    def _destination_state(self) -> tuple[Path | None, bool, bool]:
+        resolved = self._resolved_destination()
+        if resolved is None:
+            return None, False, False
+        try:
+            exists = resolved.exists()
+            is_directory = resolved.is_dir()
+        except OSError:
+            return resolved, False, False
+        return resolved, (not exists) or is_directory, is_directory
+
     def connect_google(self) -> None:
         self.connect_button.setEnabled(False)
         self.account_status_label.setText("Opening Google sign-in...")
@@ -234,8 +245,8 @@ class MainWindow(QMainWindow):
             )
             return
 
-        output_root = self._resolved_destination()
-        if output_root is None:
+        output_root, has_destination, _ = self._destination_state()
+        if output_root is None or not has_destination:
             QMessageBox.warning(
                 self,
                 "Destination Required",
@@ -246,10 +257,8 @@ class MainWindow(QMainWindow):
         selected_scope = self.get_selected_scope()
 
         # Initialize checkpoint database and check resume compatibility
-        metadata_dir = output_root / "metadata"
-        checkpoint_path = metadata_dir / "checkpoint.sqlite3"
+        checkpoint_path = output_root / "export.sqlite3"
         try:
-            metadata_dir.mkdir(parents=True, exist_ok=True)
             checkpoint_store = CheckpointStore(checkpoint_path)
             compatible, reason = check_resume_compatibility(
                 checkpoint_store=checkpoint_store,
@@ -341,7 +350,7 @@ class MainWindow(QMainWindow):
         output_root = self._resolved_destination()
         if output_root is not None:
             try:
-                if output_root.exists():
+                if output_root.is_dir():
                     QDesktopServices.openUrl(QUrl.fromLocalFile(str(output_root)))
             except OSError:
                 pass
@@ -487,14 +496,7 @@ class MainWindow(QMainWindow):
             return
 
         is_connected = self.gmail_client is not None
-        resolved = self._resolved_destination()
-        has_destination = resolved is not None
-        dest_exists = False
-        if resolved is not None:
-            try:
-                dest_exists = resolved.exists()
-            except OSError:
-                dest_exists = False
+        _, has_destination, dest_exists = self._destination_state()
 
         self.start_button.setEnabled(is_connected and has_destination)
         self.cancel_button.setEnabled(False)

@@ -74,6 +74,7 @@ def test_scope_selection_mapping(qapp: object, tmp_path: Path) -> None:
 def test_destination_selection_and_control_enabling(qapp: object, tmp_path: Path) -> None:
     window = _create_test_window(tmp_path)
     export_dir = tmp_path / "export_output"
+    export_file = tmp_path / "existing_export_file"
 
     # Destination set but no account connected -> Start disabled, Open Folder enabled if dir exists
     export_dir.mkdir(parents=True, exist_ok=True)
@@ -93,6 +94,12 @@ def test_destination_selection_and_control_enabling(qapp: object, tmp_path: Path
     # Both connected and destination set -> Start enabled
     window.set_destination(str(export_dir))
     assert window.start_button.isEnabled() is True
+
+    # Existing files are not valid destination folders
+    export_file.write_text("not a directory", encoding="utf-8")
+    window.set_destination(str(export_file))
+    assert window.start_button.isEnabled() is False
+    assert window.open_folder_button.isEnabled() is False
 
 
 def test_destination_path_resolution_and_malformed_input(qapp: object, tmp_path: Path) -> None:
@@ -232,13 +239,30 @@ def test_export_cannot_start_without_destination(
     assert window._export_thread is None
 
 
+def test_export_cannot_start_with_existing_file_destination(
+    qapp: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    window = _create_test_window(tmp_path)
+    window.gmail_client = MagicMock(spec=GmailClient)
+    window.mailbox_profile = MailboxProfile("user@example.com", 100, 10)
+    export_file = tmp_path / "not_a_folder"
+    export_file.write_text("file", encoding="utf-8")
+    window.set_destination(str(export_file))
+
+    warning_mock = MagicMock()
+    monkeypatch.setattr(QMessageBox, "warning", warning_mock)
+
+    window.start_export()
+
+    warning_mock.assert_called_once()
+    assert window._export_thread is None
+
+
 def test_resume_identity_validation_incompatible_account(
     qapp: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     dest = tmp_path / "export_dest"
-    checkpoint_dir = dest / "metadata"
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    existing_store = CheckpointStore(checkpoint_dir / "checkpoint.sqlite3")
+    existing_store = CheckpointStore(dest / "export.sqlite3")
     existing_store.set_metadata("other-user@company.com", "all_mail")
 
     window = _create_test_window(tmp_path)
@@ -261,9 +285,7 @@ def test_resume_identity_validation_incompatible_scope(
     qapp: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     dest = tmp_path / "export_dest"
-    checkpoint_dir = dest / "metadata"
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    existing_store = CheckpointStore(checkpoint_dir / "checkpoint.sqlite3")
+    existing_store = CheckpointStore(dest / "export.sqlite3")
     existing_store.set_metadata("employee@company.com", "inbox")
 
     window = _create_test_window(tmp_path)
@@ -287,9 +309,7 @@ def test_resume_confirmation_prompt_accept_and_decline(
     qapp: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     dest = tmp_path / "resume_dest"
-    checkpoint_dir = dest / "metadata"
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    existing_store = CheckpointStore(checkpoint_dir / "checkpoint.sqlite3")
+    existing_store = CheckpointStore(dest / "export.sqlite3")
     existing_store.set_metadata("employee@company.com", "all_mail")
     existing_store.mark_completed(
         CompletedMessage(
@@ -333,7 +353,7 @@ def test_export_worker_signals_and_service_execution(
     qapp: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     dest = tmp_path / "export_dest"
-    store = CheckpointStore(dest / "metadata" / "checkpoint.sqlite3")
+    store = CheckpointStore(dest / "export.sqlite3")
     mock_client = MagicMock(spec=GmailClient)
     cancel_event = threading.Event()
 
@@ -395,7 +415,7 @@ def test_export_worker_exception_handling(
     qapp: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     dest = tmp_path / "export_dest"
-    store = CheckpointStore(dest / "metadata" / "checkpoint.sqlite3")
+    store = CheckpointStore(dest / "export.sqlite3")
     mock_client = MagicMock(spec=GmailClient)
     cancel_event = threading.Event()
 
@@ -689,6 +709,22 @@ def test_open_export_folder(
     assert export_dir.name in url_arg.toString()
 
 
+def test_open_export_folder_ignores_regular_file(
+    qapp: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    window = _create_test_window(tmp_path)
+    export_file = tmp_path / "my_backup_file"
+    export_file.write_text("not a directory", encoding="utf-8")
+    window.set_destination(str(export_file))
+
+    open_url_mock = MagicMock()
+    monkeypatch.setattr("mailbox_rescue.ui.main_window.QDesktopServices.openUrl", open_url_mock)
+
+    window.open_export_folder()
+
+    open_url_mock.assert_not_called()
+
+
 def test_full_ui_export_flow_and_resume(
     qapp: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -711,7 +747,7 @@ def test_full_ui_export_flow_and_resume(
 
     assert (dest / "messages" / "msg_alpha.eml").exists()
     assert (dest / "messages" / "msg_beta.eml").exists()
-    assert (dest / "metadata" / "checkpoint.sqlite3").exists()
+    assert (dest / "export.sqlite3").exists()
     assert window.progress_status_label.text() == "Export complete."
     assert "Saved: 2" in window.progress_detail_label.text()
     assert window.open_folder_button.isEnabled() is True
@@ -735,10 +771,9 @@ def test_corrupt_checkpoint_displays_friendly_storage_error(
     qapp: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     dest = tmp_path / "corrupt_export"
-    metadata_dir = dest / "metadata"
-    metadata_dir.mkdir(parents=True, exist_ok=True)
+    dest.mkdir(parents=True, exist_ok=True)
     # Write garbage bytes to checkpoint file so sqlite3 fails to open/query it
-    (metadata_dir / "checkpoint.sqlite3").write_bytes(b"CORRUPTED_SQLITE_HEADER_GARBAGE")
+    (dest / "export.sqlite3").write_bytes(b"CORRUPTED_SQLITE_HEADER_GARBAGE")
 
     window = _create_test_window(tmp_path)
     window.gmail_client = MagicMock(spec=GmailClient)
@@ -779,4 +814,3 @@ def test_close_event_when_export_finishes_while_dialog_open(
     # Because export thread was already finished when Yes was clicked, close succeeds immediately
     assert event.isAccepted() is True
     assert window._close_pending is False
-
