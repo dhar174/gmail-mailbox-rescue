@@ -23,6 +23,47 @@ class FailedMessage:
     last_failed_at: str
 
 
+@dataclass(frozen=True, slots=True)
+class ExportMetadata:
+    account_email: str
+    export_scope: str
+    created_at: str
+    last_updated_at: str
+
+
+def check_resume_compatibility(
+    checkpoint_store: CheckpointStore,
+    account_email: str,
+    export_scope: str,
+) -> tuple[bool, str | None]:
+    metadata = checkpoint_store.get_metadata()
+    if metadata is None:
+        if checkpoint_store.completed_count() > 0 or checkpoint_store.failed_count() > 0:
+            return (
+                False,
+                (
+                    "This export folder contains an older checkpoint that is not bound to a Google account. "
+                    "Choose a new folder for this export."
+                ),
+            )
+        return True, None
+    if metadata.account_email.strip().lower() != account_email.strip().lower():
+        return (
+            False,
+            f"This export folder belongs to {metadata.account_email}. Choose a different folder.",
+        )
+    if metadata.export_scope != export_scope:
+        existing_scope_display = "All Mail" if metadata.export_scope == "all_mail" else "Inbox only"
+        return (
+            False,
+            (
+                f"This folder contains an existing {existing_scope_display} export. "
+                f"Choose '{existing_scope_display}' to resume it or select a different destination."
+            ),
+        )
+    return True, None
+
+
 class CheckpointStore:
     def __init__(self, database_path: Path) -> None:
         database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -164,6 +205,41 @@ class CheckpointStore:
             row = connection.execute("SELECT COUNT(*) FROM failed_messages").fetchone()
         return int(row[0])
 
+    def get_metadata(self) -> ExportMetadata | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT account_email, export_scope, created_at, last_updated_at
+                FROM export_metadata
+                WHERE id = 1
+                """
+            ).fetchone()
+        if row is None:
+            return None
+        return ExportMetadata(
+            account_email=row[0],
+            export_scope=row[1],
+            created_at=row[2],
+            last_updated_at=row[3],
+        )
+
+    def set_metadata(self, account_email: str, export_scope: str) -> None:
+        now = datetime.now(UTC).isoformat()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO export_metadata (
+                    id, account_email, export_scope, created_at, last_updated_at
+                )
+                VALUES (1, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    account_email = excluded.account_email,
+                    export_scope = excluded.export_scope,
+                    last_updated_at = excluded.last_updated_at
+                """,
+                (account_email, export_scope, now, now),
+            )
+
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.database_path)
 
@@ -191,3 +267,57 @@ class CheckpointStore:
                 )
                 """
             )
+            columns = [
+                row[1]
+                for row in connection.execute("PRAGMA table_info(export_metadata)").fetchall()
+            ]
+            if columns and "id" not in columns:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    """
+                    SELECT account_email, export_scope, created_at, last_updated_at
+                    FROM export_metadata
+                    ORDER BY rowid ASC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                connection.execute("ALTER TABLE export_metadata RENAME TO _legacy_export_metadata")
+                try:
+                    connection.execute(
+                        """
+                        CREATE TABLE export_metadata (
+                            id INTEGER PRIMARY KEY CHECK (id = 1),
+                            account_email TEXT NOT NULL,
+                            export_scope TEXT NOT NULL,
+                            created_at TEXT NOT NULL,
+                            last_updated_at TEXT NOT NULL
+                        )
+                        """
+                    )
+                    if row is not None:
+                        connection.execute(
+                            """
+                            INSERT INTO export_metadata (
+                                id, account_email, export_scope, created_at, last_updated_at
+                            )
+                            VALUES (1, ?, ?, ?, ?)
+                            """,
+                            row,
+                        )
+                    connection.execute("DROP TABLE _legacy_export_metadata")
+                except Exception:
+                    connection.execute("DROP TABLE IF EXISTS export_metadata")
+                    connection.execute("ALTER TABLE _legacy_export_metadata RENAME TO export_metadata")
+                    raise
+            else:
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS export_metadata (
+                        id INTEGER PRIMARY KEY CHECK (id = 1),
+                        account_email TEXT NOT NULL,
+                        export_scope TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        last_updated_at TEXT NOT NULL
+                    )
+                    """
+                )
