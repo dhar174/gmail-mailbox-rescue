@@ -402,6 +402,125 @@ def test_legacy_metadata_migration_failure_preserves_original_metadata(
         assert row[2] == "2026-08-01T00:00:00+00:00"
 
 
+def test_checkpoint_message_metadata_lifecycle_and_list_completed(tmp_path: Path) -> None:
+    from mailbox_rescue.storage.checkpoint import MessageMetadata
+
+    store = CheckpointStore(tmp_path / "export.sqlite3")
+
+    assert store.list_completed() == []
+    assert store.get_all_message_metadata() == {}
+
+    msg1 = CompletedMessage(
+        message_id="msg_100",
+        relative_path="messages/msg_100.eml",
+        sha256="1" * 64,
+        size_bytes=1000,
+    )
+    meta1 = MessageMetadata(
+        message_id="msg_100",
+        thread_id="thread_100",
+        labels_json='[{"id": "INBOX", "name": "INBOX"}]',
+        captured_at="2026-08-28T12:00:00+00:00",
+    )
+
+    store.mark_completed(msg1, message_metadata=meta1)
+
+    assert store.is_completed("msg_100")
+    assert store.get_completed("msg_100") == msg1
+    assert store.get_message_metadata("msg_100") == meta1
+
+    # Backfill or standalone metadata update
+    meta1_updated = MessageMetadata(
+        message_id="msg_100",
+        thread_id="thread_100",
+        labels_json='[{"id": "INBOX", "name": "INBOX"}, {"id": "STARRED", "name": "STARRED"}]',
+        captured_at="2026-08-28T12:05:00+00:00",
+    )
+    store.set_message_metadata(meta1_updated)
+    assert store.get_message_metadata("msg_100") == meta1_updated
+
+    # Add second message
+    msg2 = CompletedMessage(
+        message_id="msg_200",
+        relative_path="messages/msg_200.eml",
+        sha256="2" * 64,
+        size_bytes=2000,
+    )
+    store.mark_completed(msg2)  # without metadata initially
+    assert store.get_message_metadata("msg_200") is None
+
+    completed_list = store.list_completed()
+    assert len(completed_list) == 2
+    assert completed_list[0] == msg1
+    assert completed_list[1] == msg2
+
+    all_meta = store.get_all_message_metadata()
+    assert len(all_meta) == 1
+    assert all_meta["msg_100"] == meta1_updated
+
+
+def test_checkpoint_metadata_failure_rolls_back_completed_and_preserves_failure(
+    tmp_path: Path,
+) -> None:
+    from mailbox_rescue.storage.checkpoint import MessageMetadata
+
+    store = CheckpointStore(tmp_path / "export.sqlite3")
+
+    failure = FailedMessage(
+        message_id="msg_meta_fail",
+        error_type="HttpError",
+        error_message="503 Service Unavailable",
+        attempt_count=2,
+        last_failed_at="2026-08-28T12:00:00+00:00",
+    )
+    store.mark_failed(failure)
+
+    original_connect = store._connect
+
+    class FaultyConnection:
+        def __init__(self, real_conn) -> None:
+            self._real = real_conn
+
+        def __enter__(self):
+            self._real.__enter__()
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            return self._real.__exit__(exc_type, exc_val, exc_tb)
+
+        def execute(self, sql, params=()):
+            if "INSERT INTO message_metadata" in sql:
+                raise sqlite3.OperationalError("Simulated metadata table failure")
+            return self._real.execute(sql, params)
+
+    store._connect = lambda: FaultyConnection(original_connect())
+
+    completed = CompletedMessage(
+        message_id="msg_meta_fail",
+        relative_path="messages/msg_meta_fail.eml",
+        sha256="f" * 64,
+        size_bytes=400,
+    )
+    meta = MessageMetadata(
+        message_id="msg_meta_fail",
+        thread_id="thread_fail",
+        labels_json="[]",
+        captured_at="2026-08-28T12:00:00+00:00",
+    )
+
+    with pytest.raises(sqlite3.OperationalError, match="Simulated metadata table failure"):
+        store.mark_completed(completed, message_metadata=meta)
+
+    store._connect = original_connect
+
+    # Verify atomic rollback
+    assert not store.is_completed("msg_meta_fail")
+    assert store.get_message_metadata("msg_meta_fail") is None
+    assert store.get_failure("msg_meta_fail") == failure
+    assert store.failed_count() == 1
+
+
+
 
 
 

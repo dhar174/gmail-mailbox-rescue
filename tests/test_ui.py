@@ -508,10 +508,12 @@ def test_export_completed_full_success_updates_ui(qapp: object, tmp_path: Path) 
         skipped_completed=0,
         failed=0,
         cancelled=False,
+        archive_verified=True,
+        verified_files=50,
     )
     window._on_export_completed(result)
 
-    assert window.progress_status_label.text() == "Export complete."
+    assert window.progress_status_label.text() == "Export complete and verified."
     assert "Saved: 50" in window.progress_detail_label.text()
     assert window.progress_bar.value() == 50
     assert window.connect_button.isEnabled() is True
@@ -528,12 +530,46 @@ def test_export_completed_partial_success_updates_ui(qapp: object, tmp_path: Pat
         skipped_completed=0,
         failed=5,
         cancelled=False,
+        archive_verified=True,
+        verified_files=45,
     )
     window._on_export_completed(result)
 
     assert "5 message(s) that could not be saved" in window.progress_status_label.text()
+    assert "The saved archive passed verification." in window.progress_status_label.text()
     assert "Saved: 45" in window.progress_detail_label.text()
     assert "Failed: 5" in window.progress_detail_label.text()
+    assert window.connect_button.isEnabled() is True
+
+
+def test_export_completed_verification_failed_updates_ui(qapp: object, tmp_path: Path) -> None:
+    from mailbox_rescue.export.models import VerificationFailure
+
+    window = _create_test_window(tmp_path)
+    window.destination_path = str(tmp_path)
+
+    result = ExportResult(
+        total_scanned=50,
+        completed_this_run=50,
+        skipped_completed=0,
+        failed=0,
+        cancelled=False,
+        archive_verified=False,
+        verified_files=49,
+        verification_failures=[
+            VerificationFailure(
+                message_id="bad",
+                relative_path="messages/bad.eml",
+                reason="sha256_mismatch",
+            )
+        ],
+    )
+    window._on_export_completed(result)
+
+    assert (
+        window.progress_status_label.text()
+        == "Export completed, but archive verification failed."
+    )
     assert window.connect_button.isEnabled() is True
 
 
@@ -663,6 +699,8 @@ def test_export_lifecycle_and_reusability(
             skipped_completed=0,
             failed=0,
             cancelled=False,
+            archive_verified=True,
+            verified_files=2,
         )
 
     monkeypatch.setattr("mailbox_rescue.ui.worker.ExportService.run", mock_service_run)
@@ -672,7 +710,7 @@ def test_export_lifecycle_and_reusability(
     assert window._export_thread is not None
     _wait_for_export_to_finish(window)
 
-    assert window.progress_status_label.text() == "Export complete."
+    assert window.progress_status_label.text() == "Export complete and verified."
     assert window.start_button.isEnabled() is True
     assert window.connect_button.isEnabled() is True
 
@@ -687,7 +725,7 @@ def test_export_lifecycle_and_reusability(
     assert window._export_thread is not None
     _wait_for_export_to_finish(window)
 
-    assert window.progress_status_label.text() == "Export complete."
+    assert window.progress_status_label.text() == "Export complete and verified."
     assert window.start_button.isEnabled() is True
 
 
@@ -728,13 +766,21 @@ def test_open_export_folder_ignores_regular_file(
 def test_full_ui_export_flow_and_resume(
     qapp: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from mailbox_rescue.gmail.client import GmailExportMessage, GmailLabel
+
     dest = tmp_path / "full_export"
     window = _create_test_window(tmp_path)
 
     mock_client = MagicMock(spec=GmailClient)
+    mock_client.list_labels.return_value = [GmailLabel(id="INBOX", name="INBOX", type="system")]
     mock_client.iter_message_ids.return_value = iter(["msg_alpha", "msg_beta"])
-    mock_client.get_raw_message.side_effect = (
-        lambda msg_id: f"From: test@example.com\r\nSubject: {msg_id}\r\n\r\nBody".encode()
+    mock_client.get_export_message.side_effect = (
+        lambda msg_id: GmailExportMessage(
+            message_id=msg_id,
+            thread_id=f"th_{msg_id}",
+            label_ids=("INBOX",),
+            raw_bytes=f"From: test@example.com\r\nSubject: {msg_id}\r\n\r\nBody".encode(),
+        )
     )
 
     window.gmail_client = mock_client
@@ -748,7 +794,11 @@ def test_full_ui_export_flow_and_resume(
     assert (dest / "messages" / "msg_alpha.eml").exists()
     assert (dest / "messages" / "msg_beta.eml").exists()
     assert (dest / "export.sqlite3").exists()
-    assert window.progress_status_label.text() == "Export complete."
+    assert (dest / "mailbox.mbox").exists()
+    assert (dest / "checksums.sha256").exists()
+    assert (dest / "metadata" / "account.json").exists()
+    assert (dest / "export-report.html").exists()
+    assert window.progress_status_label.text() == "Export complete and verified."
     assert "Saved: 2" in window.progress_detail_label.text()
     assert window.open_folder_button.isEnabled() is True
 
@@ -762,7 +812,7 @@ def test_full_ui_export_flow_and_resume(
     window.start_export()
     _wait_for_export_to_finish(window)
 
-    assert window.progress_status_label.text() == "Export complete."
+    assert window.progress_status_label.text() == "Export complete and verified."
     assert "Saved: 0" in window.progress_detail_label.text()
     assert "Already saved: 2" in window.progress_detail_label.text()
 

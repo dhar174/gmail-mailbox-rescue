@@ -67,20 +67,35 @@ For development, this client can be replaced later with an OAuth client approved
 - OAuth client configuration and user tokens are excluded from Git.
 - Exported messages remain local unless the user moves them elsewhere.
 
-## Planned archive layout
+## Archive layout
+
+The completed archive produced by Mailbox Rescue is structured as a portable, self-describing, and verified backup:
 
 ```text
 Mailbox-Backup/
-├── export.sqlite3        # resume checkpoint database
-├── messages/
-│   ├── <gmail-message-id>.eml
+├── export.sqlite3        # SQLite checkpoint database (required for safe resume)
+├── messages/             # Canonical preserved raw RFC 822 email files
+│   ├── <safe-id>.eml
 │   └── ...
-├── mailbox.mbox          # later milestone
-└── export-report.html    # later milestone
+├── mailbox.mbox          # Standard MBOX format (portable convenience)
+├── checksums.sha256      # SHA-256 manifest verifying EML file integrity
+├── metadata/             # Portable JSON sidecar metadata
+│   ├── account.json      # Account and scope identity snapshot
+│   ├── labels.json       # Gmail label snapshot (system and user labels)
+│   └── messages.jsonl    # Line-delimited message IDs, thread IDs, labels, and hashes
+└── export-report.html    # Standalone HTML summary report with verification status
 ```
+
+### Key archive principles
+
+- **Canonical EMLs**: Individual `.eml` files contain the exact, unmodified raw bytes received from Gmail's API.
+- **MBOX Portability**: `mailbox.mbox` is regenerated from the canonical verified EML files for compatibility with standard email clients.
+- **Integrity Verification**: `checksums.sha256` and automatic post-export verification check that every saved file is intact and unmodified.
+- **Preserved Metadata**: The `metadata/` directory preserves Gmail thread relationships, label assignments, and account details in standard JSON formats without bloating message files.
+- **Self-Healing Resume**: `export.sqlite3` tracks completed progress, validates existing files on resume, and repairs corrupted or missing messages.
 
 ## Running tests
 
 ```powershell
-pytest
+pytest -v
 ```

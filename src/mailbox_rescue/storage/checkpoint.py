@@ -7,6 +7,14 @@ from pathlib import Path
 
 
 @dataclass(frozen=True, slots=True)
+class MessageMetadata:
+    message_id: str
+    thread_id: str
+    labels_json: str
+    captured_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class CompletedMessage:
     message_id: str
     relative_path: str
@@ -97,7 +105,30 @@ class CheckpointStore:
             size_bytes=int(row[3]),
         )
 
-    def mark_completed(self, message: CompletedMessage) -> None:
+    def list_completed(self) -> list[CompletedMessage]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT message_id, relative_path, sha256, size_bytes
+                FROM completed_messages
+                ORDER BY message_id ASC
+                """
+            ).fetchall()
+        return [
+            CompletedMessage(
+                message_id=row[0],
+                relative_path=row[1],
+                sha256=row[2],
+                size_bytes=int(row[3]),
+            )
+            for row in rows
+        ]
+
+    def mark_completed(
+        self,
+        message: CompletedMessage,
+        message_metadata: MessageMetadata | None = None,
+    ) -> None:
         completed_at = datetime.now(UTC).isoformat()
         with self._connect() as connection:
             connection.execute(
@@ -120,10 +151,87 @@ class CheckpointStore:
                     completed_at,
                 ),
             )
+            if message_metadata is not None:
+                connection.execute(
+                    """
+                    INSERT INTO message_metadata (
+                        message_id, thread_id, labels_json, captured_at
+                    )
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(message_id) DO UPDATE SET
+                        thread_id = excluded.thread_id,
+                        labels_json = excluded.labels_json,
+                        captured_at = excluded.captured_at
+                    """,
+                    (
+                        message_metadata.message_id,
+                        message_metadata.thread_id,
+                        message_metadata.labels_json,
+                        message_metadata.captured_at,
+                    ),
+                )
             connection.execute(
                 "DELETE FROM failed_messages WHERE message_id = ?",
                 (message.message_id,),
             )
+
+    def get_message_metadata(self, message_id: str) -> MessageMetadata | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT message_id, thread_id, labels_json, captured_at
+                FROM message_metadata
+                WHERE message_id = ?
+                """,
+                (message_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return MessageMetadata(
+            message_id=row[0],
+            thread_id=row[1],
+            labels_json=row[2],
+            captured_at=row[3],
+        )
+
+    def set_message_metadata(self, metadata: MessageMetadata) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO message_metadata (
+                    message_id, thread_id, labels_json, captured_at
+                )
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(message_id) DO UPDATE SET
+                    thread_id = excluded.thread_id,
+                    labels_json = excluded.labels_json,
+                    captured_at = excluded.captured_at
+                """,
+                (
+                    metadata.message_id,
+                    metadata.thread_id,
+                    metadata.labels_json,
+                    metadata.captured_at,
+                ),
+            )
+
+    def get_all_message_metadata(self) -> dict[str, MessageMetadata]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT message_id, thread_id, labels_json, captured_at
+                FROM message_metadata
+                """
+            ).fetchall()
+        return {
+            row[0]: MessageMetadata(
+                message_id=row[0],
+                thread_id=row[1],
+                labels_json=row[2],
+                captured_at=row[3],
+            )
+            for row in rows
+        }
 
     def completed_count(self) -> int:
         with self._connect() as connection:
@@ -253,6 +361,16 @@ class CheckpointStore:
                     sha256 TEXT NOT NULL,
                     size_bytes INTEGER NOT NULL,
                     completed_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS message_metadata (
+                    message_id TEXT PRIMARY KEY,
+                    thread_id TEXT NOT NULL,
+                    labels_json TEXT NOT NULL,
+                    captured_at TEXT NOT NULL
                 )
                 """
             )

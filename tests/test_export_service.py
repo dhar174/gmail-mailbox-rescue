@@ -24,6 +24,9 @@ from mailbox_rescue.export.service import ExportService
 from mailbox_rescue.storage.checkpoint import CheckpointStore, CompletedMessage, FailedMessage
 
 
+from mailbox_rescue.gmail.client import GmailExportMessage, GmailLabel
+
+
 def _make_http_error(status: int, reason: str = "", error_dict: dict | None = None) -> HttpError:
     resp = SimpleNamespace(status=status, reason=reason)
     if error_dict is not None:
@@ -38,15 +41,36 @@ class FakeGmailClient:
         self,
         message_map: dict[str, bytes] | None = None,
         message_ids: list[str] | None = None,
+        labels: list[GmailLabel] | None = None,
     ) -> None:
         self.message_map = message_map or {}
         self.message_ids = (
             message_ids if message_ids is not None else list(self.message_map.keys())
         )
+        self.labels = (
+            labels
+            if labels is not None
+            else [
+                GmailLabel(id="INBOX", name="INBOX", type="system"),
+                GmailLabel(id="Label_1", name="Projects", type="user"),
+            ]
+        )
         self.scan_calls: list[dict[str, Any]] = []
-        self.get_raw_calls: list[str] = []
+        self.get_export_calls: list[str] = []
+        self.get_raw_calls = self.get_export_calls
         self.scan_side_effects: list[Any] = []
-        self.get_raw_side_effects: dict[str, list[Any]] = {}
+        self.list_labels_side_effects: list[Any] = []
+        self.get_export_side_effects: dict[str, list[Any]] = {}
+        self.get_raw_side_effects = self.get_export_side_effects
+
+    def list_labels(self) -> list[GmailLabel]:
+        if self.list_labels_side_effects:
+            effect = self.list_labels_side_effects.pop(0)
+            if isinstance(effect, BaseException):
+                raise effect
+            if callable(effect):
+                return effect()
+        return self.labels
 
     def iter_message_ids(
         self,
@@ -70,17 +94,25 @@ class FakeGmailClient:
                 effect()
         yield from self.message_ids
 
-    def get_raw_message(self, message_id: str) -> bytes:
-        self.get_raw_calls.append(message_id)
-        if self.get_raw_side_effects.get(message_id):
-            effect = self.get_raw_side_effects[message_id].pop(0)
+    def get_export_message(self, message_id: str) -> GmailExportMessage:
+        self.get_export_calls.append(message_id)
+        if self.get_export_side_effects.get(message_id):
+            effect = self.get_export_side_effects[message_id].pop(0)
             if isinstance(effect, BaseException):
                 raise effect
             if callable(effect):
                 return effect()
         if message_id not in self.message_map:
             raise _make_http_error(404, reason="Not Found")
-        return self.message_map[message_id]
+        return GmailExportMessage(
+            message_id=message_id,
+            thread_id=f"th_{message_id}",
+            label_ids=("INBOX", "Label_1"),
+            raw_bytes=self.message_map[message_id],
+        )
+
+    def get_raw_message(self, message_id: str) -> bytes:
+        return self.get_export_message(message_id).raw_bytes
 
 
 def _make_test_policy(max_attempts: int = 4) -> tuple[RetryPolicy, list[float]]:
@@ -191,20 +223,36 @@ def test_inbox_scope_parameters(tmp_path: Path) -> None:
 
 
 def test_resume_skips_already_completed_messages(tmp_path: Path) -> None:
+    import hashlib
+    from mailbox_rescue.storage.checkpoint import MessageMetadata
+
     store = CheckpointStore(tmp_path / "checkpoint.sqlite3")
-    # Pre-populate msg_1 as completed
+    raw_1 = b"raw 1"
+    h1 = hashlib.sha256(raw_1).hexdigest()
+
+    # Pre-populate msg_1 on disk with metadata
+    messages_dir = tmp_path / "messages"
+    messages_dir.mkdir(parents=True)
+    (messages_dir / "msg_1.eml").write_bytes(raw_1)
+
     store.mark_completed(
         CompletedMessage(
             message_id="msg_1",
             relative_path="messages/msg_1.eml",
-            sha256="0" * 64,
-            size_bytes=100,
-        )
+            sha256=h1,
+            size_bytes=len(raw_1),
+        ),
+        message_metadata=MessageMetadata(
+            message_id="msg_1",
+            thread_id="th_msg_1",
+            labels_json='[{"id": "INBOX", "name": "INBOX"}]',
+            captured_at="2026-08-28T12:00:00+00:00",
+        ),
     )
 
     fake_client = FakeGmailClient(
         message_map={
-            "msg_1": b"raw 1",
+            "msg_1": raw_1,
             "msg_2": b"raw 2",
         }
     )
@@ -224,8 +272,8 @@ def test_resume_skips_already_completed_messages(tmp_path: Path) -> None:
     assert result.failed == 0
     assert result.cancelled is False
 
-    # Ensure get_raw_message was only called for msg_2, never for msg_1
-    assert fake_client.get_raw_calls == ["msg_2"]
+    # Ensure get_export_message was only called for msg_2, never for msg_1
+    assert fake_client.get_export_calls == ["msg_2"]
 
     # Ensure progress recorded message skipped
     skipped_events = [p for p in progress_events if p.phase == ExportPhase.MESSAGE_SKIPPED]
@@ -501,7 +549,7 @@ def test_checkpoint_read_failure_raises_fatal_storage_error(tmp_path: Path) -> N
     service = ExportService(fake_client, store, policy)  # type: ignore[arg-type]
 
     with (
-        patch.object(store, "is_completed", side_effect=sqlite3.DatabaseError("DB read failed")),
+        patch.object(store, "get_completed", side_effect=sqlite3.DatabaseError("DB read failed")),
         pytest.raises(FatalStorageError, match="Fatal database error reading checkpoint"),
     ):
         service.run(output_root=tmp_path)
@@ -575,3 +623,311 @@ def test_fetch_retry_callback_cancellation_skips_sleep(tmp_path: Path) -> None:
 
     assert result.cancelled is True
     assert delays == []
+
+
+def test_resume_repairs_missing_eml(tmp_path: Path) -> None:
+    import hashlib
+    from mailbox_rescue.storage.checkpoint import MessageMetadata
+
+    store = CheckpointStore(tmp_path / "checkpoint.sqlite3")
+    raw_1 = b"raw msg 1 payload"
+    h1 = hashlib.sha256(raw_1).hexdigest()
+
+    # Record in checkpoint, but do NOT create file on disk
+    store.mark_completed(
+        CompletedMessage(
+            message_id="msg_1",
+            relative_path="messages/msg_1.eml",
+            sha256=h1,
+            size_bytes=len(raw_1),
+        ),
+        message_metadata=MessageMetadata(
+            message_id="msg_1",
+            thread_id="th_1",
+            labels_json="[]",
+            captured_at="2026-08-28T12:00:00+00:00",
+        ),
+    )
+
+    fake_client = FakeGmailClient(message_map={"msg_1": raw_1})
+    policy, _ = _make_test_policy()
+    service = ExportService(fake_client, store, policy)  # type: ignore[arg-type]
+
+    result = service.run(output_root=tmp_path)
+
+    # Verification detected missing file and self-repaired by fetching from Gmail
+    assert result.completed_this_run == 1
+    assert result.skipped_completed == 0
+    assert result.failed == 0
+    assert (tmp_path / "messages" / "msg_1.eml").is_file()
+    assert (tmp_path / "messages" / "msg_1.eml").read_bytes() == raw_1
+    assert fake_client.get_export_calls == ["msg_1"]
+
+
+def test_resume_repairs_corrupted_hash_eml(tmp_path: Path) -> None:
+    import hashlib
+    from mailbox_rescue.storage.checkpoint import MessageMetadata
+
+    store = CheckpointStore(tmp_path / "checkpoint.sqlite3")
+    raw_1 = b"raw msg 1 authentic"
+    h1 = hashlib.sha256(raw_1).hexdigest()
+
+    # Write tampered content on disk
+    messages_dir = tmp_path / "messages"
+    messages_dir.mkdir(parents=True)
+    (messages_dir / "msg_1.eml").write_bytes(b"tampered content!!")
+
+    store.mark_completed(
+        CompletedMessage(
+            message_id="msg_1",
+            relative_path="messages/msg_1.eml",
+            sha256=h1,
+            size_bytes=len(raw_1),
+        ),
+        message_metadata=MessageMetadata(
+            message_id="msg_1",
+            thread_id="th_1",
+            labels_json="[]",
+            captured_at="2026-08-28T12:00:00+00:00",
+        ),
+    )
+
+    fake_client = FakeGmailClient(message_map={"msg_1": raw_1})
+    policy, _ = _make_test_policy()
+    service = ExportService(fake_client, store, policy)  # type: ignore[arg-type]
+
+    result = service.run(output_root=tmp_path)
+
+    # Verification detected hash mismatch and self-repaired
+    assert result.completed_this_run == 1
+    assert result.skipped_completed == 0
+    assert (tmp_path / "messages" / "msg_1.eml").read_bytes() == raw_1
+    assert fake_client.get_export_calls == ["msg_1"]
+
+
+def test_resume_repairs_wrong_size_eml(tmp_path: Path) -> None:
+    import hashlib
+    from mailbox_rescue.storage.checkpoint import MessageMetadata
+
+    store = CheckpointStore(tmp_path / "checkpoint.sqlite3")
+    raw_1 = b"raw msg 1 authentic"
+    h1 = hashlib.sha256(raw_1).hexdigest()
+
+    # Write truncated content on disk
+    messages_dir = tmp_path / "messages"
+    messages_dir.mkdir(parents=True)
+    (messages_dir / "msg_1.eml").write_bytes(b"truncated")
+
+    store.mark_completed(
+        CompletedMessage(
+            message_id="msg_1",
+            relative_path="messages/msg_1.eml",
+            sha256=h1,
+            size_bytes=len(raw_1),
+        ),
+        message_metadata=MessageMetadata(
+            message_id="msg_1",
+            thread_id="th_1",
+            labels_json="[]",
+            captured_at="2026-08-28T12:00:00+00:00",
+        ),
+    )
+
+    fake_client = FakeGmailClient(message_map={"msg_1": raw_1})
+    policy, _ = _make_test_policy()
+    service = ExportService(fake_client, store, policy)  # type: ignore[arg-type]
+
+    result = service.run(output_root=tmp_path)
+
+    assert result.completed_this_run == 1
+    assert result.skipped_completed == 0
+    assert (tmp_path / "messages" / "msg_1.eml").read_bytes() == raw_1
+    assert fake_client.get_export_calls == ["msg_1"]
+
+
+def test_resume_rejects_unsafe_checkpoint_path_and_repairs_safely(tmp_path: Path) -> None:
+    import hashlib
+
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    store = CheckpointStore(archive_dir / "checkpoint.sqlite3")
+
+    # Create an outside file in the parent folder
+    outside_file = tmp_path / "sensitive.txt"
+    outside_file.write_bytes(b"sensitive parent content")
+
+    raw_1 = b"safe msg 1"
+    h_outside = hashlib.sha256(outside_file.read_bytes()).hexdigest()
+
+    # Malicious/corrupted checkpoint record pointing outside archive
+    store.mark_completed(
+        CompletedMessage(
+            message_id="msg_1",
+            relative_path="../sensitive.txt",
+            sha256=h_outside,
+            size_bytes=len(outside_file.read_bytes()),
+        )
+    )
+
+    fake_client = FakeGmailClient(message_map={"msg_1": raw_1})
+    policy, _ = _make_test_policy()
+    service = ExportService(fake_client, store, policy)  # type: ignore[arg-type]
+
+    result = service.run(output_root=archive_dir)
+
+    # Verification rejected traversal and wrote safe EML inside archive_dir / messages
+    assert result.completed_this_run == 1
+    assert (archive_dir / "messages" / "msg_1.eml").is_file()
+    assert (archive_dir / "messages" / "msg_1.eml").read_bytes() == raw_1
+
+    # Checkpoint updated with safe relative path
+    updated_rec = store.get_completed("msg_1")
+    assert updated_rec is not None
+    assert updated_rec.relative_path == "messages/msg_1.eml"
+
+
+def test_pre_issue5_metadata_backfill(tmp_path: Path) -> None:
+    import hashlib
+
+    store = CheckpointStore(tmp_path / "checkpoint.sqlite3")
+    raw_1 = b"existing valid raw message"
+    h1 = hashlib.sha256(raw_1).hexdigest()
+
+    # Intact EML exists on disk
+    messages_dir = tmp_path / "messages"
+    messages_dir.mkdir(parents=True)
+    eml_file = messages_dir / "msg_1.eml"
+    eml_file.write_bytes(raw_1)
+
+    # Checkpoint record exists WITHOUT metadata
+    store.mark_completed(
+        CompletedMessage(
+            message_id="msg_1",
+            relative_path="messages/msg_1.eml",
+            sha256=h1,
+            size_bytes=len(raw_1),
+        )
+    )
+    assert store.get_message_metadata("msg_1") is None
+
+    fake_client = FakeGmailClient(message_map={"msg_1": raw_1})
+    policy, _ = _make_test_policy()
+    service = ExportService(fake_client, store, policy)  # type: ignore[arg-type]
+
+    # Track if write_eml was called
+    with patch("mailbox_rescue.export.service.write_eml") as mock_write_eml:
+        result = service.run(output_root=tmp_path)
+
+        # Metadata was backfilled without re-writing the valid EML
+        mock_write_eml.assert_not_called()
+
+    assert result.completed_this_run == 0
+    assert result.skipped_completed == 1
+    assert fake_client.get_export_calls == ["msg_1"]
+
+    meta = store.get_message_metadata("msg_1")
+    assert meta is not None
+    assert meta.thread_id == "th_msg_1"
+    assert "INBOX" in meta.labels_json
+
+
+def test_export_service_generates_all_portable_archive_artifacts(tmp_path: Path) -> None:
+    store = CheckpointStore(tmp_path / "export.sqlite3")
+    store.set_metadata(account_email="alice@example.com", export_scope="all_mail")
+
+    raw_1 = b"From: a@example.com\r\nSubject: Test 1\r\n\r\nBody 1\r\n"
+    raw_2 = b"From: b@example.com\r\nSubject: Test 2\r\n\r\nBody 2\r\n"
+
+    fake_client = FakeGmailClient(
+        message_map={"msg_1": raw_1, "msg_2": raw_2},
+        labels=[
+            GmailLabel(id="INBOX", name="INBOX", type="system"),
+            GmailLabel(id="Label_1", name="Work", type="user"),
+        ],
+    )
+    policy, _ = _make_test_policy()
+    service = ExportService(fake_client, store, policy)  # type: ignore[arg-type]
+
+    result = service.run(output_root=tmp_path)
+
+    # 1. Check result fields
+    assert result.archive_verified is True
+    assert result.verified_files == 2
+    assert result.verification_failures == []
+    assert result.metadata_warnings == []
+    assert result.report_path is not None
+    assert result.report_path == tmp_path / "export-report.html"
+
+    # 2. Check canonical files
+    assert (tmp_path / "export.sqlite3").is_file()
+    assert (tmp_path / "messages" / "msg_1.eml").is_file()
+    assert (tmp_path / "messages" / "msg_2.eml").is_file()
+
+    # 3. Check derived portable artifacts
+    assert (tmp_path / "checksums.sha256").is_file()
+    assert (tmp_path / "mailbox.mbox").is_file()
+    assert (tmp_path / "metadata" / "account.json").is_file()
+    assert (tmp_path / "metadata" / "labels.json").is_file()
+    assert (tmp_path / "metadata" / "messages.jsonl").is_file()
+    assert (tmp_path / "export-report.html").is_file()
+
+    # Verify report content
+    report_text = (tmp_path / "export-report.html").read_text(encoding="utf-8")
+    assert "VERIFIED COMPLETE" in report_text
+    assert "alice@example.com" in report_text
+
+
+def test_export_service_label_fetch_failure_degrades_gracefully(tmp_path: Path) -> None:
+    store = CheckpointStore(tmp_path / "checkpoint.sqlite3")
+    fake_client = FakeGmailClient(message_map={"msg_1": b"raw 1"})
+    # Fail list_labels with permanent 403
+    perm_403 = _make_http_error(403, reason="Forbidden", error_dict={"error": {"code": 403, "message": "No label access"}})
+    fake_client.list_labels_side_effects = [perm_403]
+
+    policy, _ = _make_test_policy()
+    service = ExportService(fake_client, store, policy)  # type: ignore[arg-type]
+
+    result = service.run(output_root=tmp_path)
+
+    # Export must not fail; raw EML is rescued
+    assert result.completed_this_run == 1
+    assert result.failed == 0
+    assert len(result.metadata_warnings) == 1
+    assert "Failed to fetch Gmail label names" in result.metadata_warnings[0]
+    assert (tmp_path / "messages" / "msg_1.eml").is_file()
+
+    # Label IDs are preserved in metadata
+    meta = store.get_message_metadata("msg_1")
+    assert meta is not None
+    assert "INBOX" in meta.labels_json
+
+
+def test_export_service_partial_export_generates_derived_artifacts_with_failures(tmp_path: Path) -> None:
+    store = CheckpointStore(tmp_path / "checkpoint.sqlite3")
+    fake_client = FakeGmailClient(
+        message_map={
+            "msg_fail": b"not used",
+            "msg_ok": b"raw ok",
+        }
+    )
+    fake_client.get_export_side_effects["msg_fail"] = [_make_http_error(404, reason="Not Found")]
+
+    policy, _ = _make_test_policy()
+    service = ExportService(fake_client, store, policy)  # type: ignore[arg-type]
+
+    result = service.run(output_root=tmp_path)
+
+    assert result.completed_this_run == 1
+    assert result.failed == 1
+    assert result.archive_verified is True
+    assert result.verified_files == 1
+
+    # Derived artifacts are generated for the successful message
+    assert (tmp_path / "checksums.sha256").is_file()
+    assert (tmp_path / "mailbox.mbox").is_file()
+    assert (tmp_path / "metadata" / "messages.jsonl").is_file()
+
+    report_html = (tmp_path / "export-report.html").read_text(encoding="utf-8")
+    assert "PARTIAL EXPORT" in report_html
+    assert "msg_fail" in report_html
+

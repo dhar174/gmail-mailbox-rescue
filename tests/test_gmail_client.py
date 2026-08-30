@@ -87,3 +87,84 @@ def test_gmail_client_get_raw_message_delegates_to_decoder() -> None:
         id="msg_xyz_789",
         format="raw",
     )
+
+
+def test_gmail_client_get_export_message_single_fetch_captures_all_fields() -> None:
+    mock_service = MagicMock()
+    encoded_unpadded = (
+        base64.urlsafe_b64encode(SAMPLE_RFC822_EMAIL).decode("ascii").rstrip("=")
+    )
+
+    messages_resource = mock_service.users.return_value.messages.return_value
+    messages_resource.get.return_value.execute.return_value = {
+        "id": "msg_12345",
+        "threadId": "thread_67890",
+        "labelIds": ["INBOX", "UNREAD", "Label_1"],
+        "raw": encoded_unpadded,
+    }
+
+    client = object.__new__(GmailClient)
+    client._service = mock_service
+
+    export_msg = client.get_export_message("msg_12345")
+
+    assert export_msg.message_id == "msg_12345"
+    assert export_msg.thread_id == "thread_67890"
+    assert export_msg.label_ids == ("INBOX", "UNREAD", "Label_1")
+    assert export_msg.raw_bytes == SAMPLE_RFC822_EMAIL
+
+    # Verifies only a single format='raw' call was made (no second metadata call)
+    messages_resource.get.assert_called_once_with(
+        userId="me",
+        id="msg_12345",
+        format="raw",
+    )
+
+
+def test_gmail_client_get_export_message_defaults_missing_optional_fields() -> None:
+    mock_service = MagicMock()
+    encoded_unpadded = base64.urlsafe_b64encode(b"simple payload").decode("ascii")
+
+    messages_resource = mock_service.users.return_value.messages.return_value
+    messages_resource.get.return_value.execute.return_value = {
+        "id": "msg_only_id",
+        "raw": encoded_unpadded,
+    }
+
+    client = object.__new__(GmailClient)
+    client._service = mock_service
+
+    export_msg = client.get_export_message("msg_only_id")
+
+    assert export_msg.message_id == "msg_only_id"
+    assert export_msg.thread_id == ""
+    assert export_msg.label_ids == ()
+    assert export_msg.raw_bytes == b"simple payload"
+
+
+def test_gmail_client_list_labels_system_and_unicode_user_labels() -> None:
+    mock_service = MagicMock()
+    labels_resource = mock_service.users.return_value.labels.return_value
+    labels_resource.list.return_value.execute.return_value = {
+        "labels": [
+            {"id": "INBOX", "name": "INBOX", "type": "system"},
+            {"id": "SENT", "name": "SENT", "type": "system"},
+            {"id": "Label_100", "name": "Projects / 集中", "type": "user"},
+        ]
+    }
+
+    client = object.__new__(GmailClient)
+    client._service = mock_service
+
+    labels = client.list_labels()
+
+    assert len(labels) == 3
+    assert labels[0].id == "INBOX"
+    assert labels[0].name == "INBOX"
+    assert labels[0].type == "system"
+    assert labels[1].id == "SENT"
+    assert labels[2].id == "Label_100"
+    assert labels[2].name == "Projects / 集中"
+    assert labels[2].type == "user"
+
+    labels_resource.list.assert_called_once_with(userId="me")

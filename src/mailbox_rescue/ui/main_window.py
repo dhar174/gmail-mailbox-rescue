@@ -438,13 +438,22 @@ class MainWindow(QMainWindow):
             if self.progress_bar.maximum() == 0:
                 self.progress_bar.setRange(0, 1)
                 self.progress_bar.setValue(0)
+        elif not result.archive_verified or len(result.verification_failures) > 0:
+            self.progress_status_label.setText(
+                "Export completed, but archive verification failed."
+            )
+            self.progress_bar.setRange(0, max(result.total_scanned, 1))
+            self.progress_bar.setValue(
+                result.completed_this_run + result.skipped_completed + result.failed
+            )
         elif result.failed == 0:
-            self.progress_status_label.setText("Export complete.")
+            self.progress_status_label.setText("Export complete and verified.")
             self.progress_bar.setRange(0, max(result.total_scanned, 1))
             self.progress_bar.setValue(result.total_scanned)
         else:
             self.progress_status_label.setText(
-                f"Export completed with {result.failed:,} message(s) that could not be saved."
+                f"Export completed with {result.failed:,} message(s) that could not be saved. "
+                "The saved archive passed verification."
             )
             self.progress_bar.setRange(0, max(result.total_scanned, 1))
             self.progress_bar.setValue(

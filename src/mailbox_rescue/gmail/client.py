@@ -16,6 +16,21 @@ class MailboxProfile:
     threads_total: int
 
 
+@dataclass(frozen=True, slots=True)
+class GmailLabel:
+    id: str
+    name: str
+    type: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GmailExportMessage:
+    message_id: str
+    thread_id: str
+    label_ids: tuple[str, ...]
+    raw_bytes: bytes
+
+
 def decode_raw_message(encoded: str) -> bytes:
     """Decode Gmail API base64url-encoded message payload into raw bytes."""
     padding = "=" * (-len(encoded) % 4)
@@ -33,6 +48,19 @@ class GmailClient:
             messages_total=int(profile.get("messagesTotal", 0)),
             threads_total=int(profile.get("threadsTotal", 0)),
         )
+
+    def list_labels(self) -> list[GmailLabel]:
+        response = self._service.users().labels().list(userId="me").execute()
+        labels_raw = response.get("labels", [])
+        return [
+            GmailLabel(
+                id=label["id"],
+                name=label.get("name", label["id"]),
+                type=label.get("type"),
+            )
+            for label in labels_raw
+            if "id" in label
+        ]
 
     def iter_message_ids(
         self,
@@ -65,11 +93,20 @@ class GmailClient:
             if not page_token:
                 break
 
-    def get_raw_message(self, message_id: str) -> bytes:
+    def get_export_message(self, message_id: str) -> GmailExportMessage:
         message = (
             self._service.users()
             .messages()
             .get(userId="me", id=message_id, format="raw")
             .execute()
         )
-        return decode_raw_message(message["raw"])
+        raw_encoded = message.get("raw", "")
+        return GmailExportMessage(
+            message_id=message.get("id", message_id),
+            thread_id=message.get("threadId", ""),
+            label_ids=tuple(message.get("labelIds") or ()),
+            raw_bytes=decode_raw_message(raw_encoded),
+        )
+
+    def get_raw_message(self, message_id: str) -> bytes:
+        return self.get_export_message(message_id).raw_bytes
