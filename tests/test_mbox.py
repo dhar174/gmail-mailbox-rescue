@@ -1,9 +1,11 @@
 import hashlib
 import mailbox
+import threading
 from pathlib import Path
 
 import pytest
 
+import mailbox_rescue.export.mbox as mbox_module
 from mailbox_rescue.export.mbox import write_mbox
 from mailbox_rescue.export.models import FatalStorageError
 from mailbox_rescue.storage.checkpoint import CompletedMessage
@@ -211,4 +213,41 @@ def test_write_mbox_tampered_hash_raises_fatal_storage_error_and_preserves_old_m
         assert read_mbox[0]["subject"] == "Msg 1"
     finally:
         read_mbox.close()
+    assert not (root / "mailbox.mbox.part").exists()
+
+
+def test_write_mbox_responsive_to_cancellation_and_cleans_part_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "archive"
+    messages_dir = root / "messages"
+    messages_dir.mkdir(parents=True)
+
+    completed_list: list[CompletedMessage] = []
+    for i in range(3):
+        msg_id = f"m{i}"
+        raw = f"From: u{i}@example.com\r\nSubject: M{i}\r\n\r\nBody {i}\r\n".encode()
+        (messages_dir / f"{msg_id}.eml").write_bytes(raw)
+        completed_list.append(
+            CompletedMessage(
+                message_id=msg_id,
+                relative_path=f"messages/{msg_id}.eml",
+                sha256=hashlib.sha256(raw).hexdigest(),
+                size_bytes=len(raw),
+            )
+        )
+
+    cancel_event = threading.Event()
+    original_resolve = mbox_module.resolve_safe_relative_path
+
+    def hook_resolve(out_root, rel_p):
+        if "m1" in rel_p:
+            cancel_event.set()
+        return original_resolve(out_root, rel_p)
+
+    monkeypatch.setattr(mbox_module, "resolve_safe_relative_path", hook_resolve)
+
+    result = write_mbox(root, completed_list, cancel_event=cancel_event)
+    assert result is None
+    assert not (root / "mailbox.mbox").exists()
     assert not (root / "mailbox.mbox.part").exists()

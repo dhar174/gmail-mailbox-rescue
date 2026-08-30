@@ -121,3 +121,38 @@ def test_write_manifest_rejects_unsafe_paths(tmp_path: Path) -> None:
         )
         with pytest.raises(ValueError, match="Unsafe relative path"):
             write_manifest(root, [msg])
+
+
+def test_verify_manifest_invalid_utf8_returns_structured_failure(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    manifest_file = root / "checksums.sha256"
+    manifest_file.write_bytes(b"\xff\xfe\xfa")
+
+    result = verify_manifest(root)
+    assert result.is_valid is False
+    assert result.total_entries == 0
+    assert result.verified_entries == 0
+    assert len(result.failures) == 1
+    assert "manifest_read_error:" in result.failures[0].reason
+
+
+def test_verify_manifest_read_oserror_returns_structured_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    manifest_file = root / "checksums.sha256"
+    manifest_file.write_text("dummy content\n", encoding="utf-8")
+
+    def mock_read_text(*args, **kwargs):
+        raise OSError("Simulated I/O device error")
+
+    monkeypatch.setattr(Path, "read_text", mock_read_text)
+
+    result = verify_manifest(root)
+    assert result.is_valid is False
+    assert result.total_entries == 0
+    assert result.verified_entries == 0
+    assert len(result.failures) == 1
+    assert "manifest_read_error: Simulated I/O device error" in result.failures[0].reason

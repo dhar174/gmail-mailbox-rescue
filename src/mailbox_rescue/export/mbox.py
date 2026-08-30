@@ -5,6 +5,7 @@ import email.errors
 import email.policy
 import hashlib
 import mailbox
+import threading
 from pathlib import Path
 
 from mailbox_rescue.export.models import FatalStorageError
@@ -15,10 +16,13 @@ from mailbox_rescue.storage.checkpoint import CompletedMessage
 def write_mbox(
     output_root: Path,
     completed_messages: list[CompletedMessage],
-) -> Path:
+    cancel_event: threading.Event | None = None,
+) -> Path | None:
     """
     Regenerate mailbox.mbox from canonical EML files present on disk.
-    Writes atomically via temporary sibling .part file, strictly revalidating every input file.
+    Writes atomically via temporary sibling .part file, strictly revalidating each input file
+    in memory one at a time (exact byte length and SHA-256 digest check).
+    Returns None if cancelled, otherwise returns the Path to mailbox.mbox.
     """
     mbox_file = output_root / "mailbox.mbox"
     part_file = output_root / "mailbox.mbox.part"
@@ -33,10 +37,15 @@ def write_mbox(
     sorted_messages = sorted(completed_messages, key=lambda m: m.message_id)
 
     mbox = mailbox.mbox(str(part_file))
+    cancelled = False
     try:
         mbox.lock()
         try:
             for completed in sorted_messages:
+                if cancel_event and cancel_event.is_set():
+                    cancelled = True
+                    break
+
                 resolved = resolve_safe_relative_path(output_root, completed.relative_path)
                 if resolved is None or not resolved.is_file():
                     raise FatalStorageError(
@@ -73,7 +82,8 @@ def write_mbox(
                             f"MBOX generation failed: could not parse message '{completed.message_id}': {parse_err}"
                         ) from parse_err
                 mbox.add(msg)
-            mbox.flush()
+            if not cancelled:
+                mbox.flush()
         finally:
             mbox.unlock()
     except Exception:
@@ -86,6 +96,14 @@ def write_mbox(
         raise
     else:
         mbox.close()
+
+    if cancelled:
+        if part_file.exists():
+            try:
+                part_file.unlink()
+            except OSError:
+                pass
+        return None
 
     part_file.replace(mbox_file)
     return mbox_file

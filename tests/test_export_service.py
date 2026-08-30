@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 from googleapiclient.errors import HttpError
 
+import mailbox_rescue.export.service as export_service_module
 from mailbox_rescue.export.models import (
     ExportPhase,
     ExportProgress,
@@ -1311,3 +1312,128 @@ def test_incomplete_metadata_backfill_failure_preserves_verified_eml_and_reports
     # 5. Report shows VERIFIED WITH METADATA WARNINGS
     report_html = (tmp_path / "export-report.html").read_text(encoding="utf-8")
     assert "VERIFIED WITH METADATA WARNINGS" in report_html
+
+
+def test_export_service_cancellation_during_phase_3_verify_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = CheckpointStore(tmp_path / "export.sqlite3")
+    store.set_metadata(account_email="alice@example.com", export_scope="all_mail")
+
+    msg_map = {
+        "m1": b"From: a@example.com\r\nSubject: 1\r\n\r\nBody 1\r\n",
+        "m2": b"From: b@example.com\r\nSubject: 2\r\n\r\nBody 2\r\n",
+        "m3": b"From: c@example.com\r\nSubject: 3\r\n\r\nBody 3\r\n",
+    }
+    fake_client = FakeGmailClient(message_map=msg_map)
+    policy, _ = _make_test_policy()
+    service = ExportService(fake_client, store, policy)  # type: ignore[arg-type]
+
+    cancel_ev = threading.Event()
+    original_verify_archive = export_service_module.verify_archive
+
+    def hook_verify_archive(out_root, chk_store, cancel_event=None):
+        # Trigger cancellation right when verify_archive starts
+        cancel_ev.set()
+        return original_verify_archive(out_root, chk_store, cancel_event=cancel_ev)
+
+    monkeypatch.setattr(export_service_module, "verify_archive", hook_verify_archive)
+
+    result = service.run(output_root=tmp_path, cancel_event=cancel_ev)
+
+    assert result.cancelled is True
+    assert result.completed_this_run == 3
+    assert result.failed == 0
+    assert result.report_path is None
+    # Derived artifacts must not exist
+    assert not (tmp_path / "mailbox.mbox").exists()
+    assert not (tmp_path / "checksums.sha256").exists()
+    assert not (tmp_path / "export-report.html").exists()
+
+    # Canonical messages and checkpoint are preserved
+    assert (tmp_path / "messages" / "m1.eml").is_file()
+    assert (tmp_path / "messages" / "m2.eml").is_file()
+    assert (tmp_path / "messages" / "m3.eml").is_file()
+    assert store.is_completed("m1")
+    assert store.is_completed("m2")
+    assert store.is_completed("m3")
+
+
+def test_export_service_cancellation_during_phase_3_write_mbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = CheckpointStore(tmp_path / "export.sqlite3")
+    store.set_metadata(account_email="alice@example.com", export_scope="all_mail")
+
+    msg_map = {
+        "m1": b"From: a@example.com\r\nSubject: 1\r\n\r\nBody 1\r\n",
+        "m2": b"From: b@example.com\r\nSubject: 2\r\n\r\nBody 2\r\n",
+        "m3": b"From: c@example.com\r\nSubject: 3\r\n\r\nBody 3\r\n",
+    }
+    fake_client = FakeGmailClient(message_map=msg_map)
+    policy, _ = _make_test_policy()
+    service = ExportService(fake_client, store, policy)  # type: ignore[arg-type]
+
+    cancel_ev = threading.Event()
+    original_write_mbox = export_service_module.write_mbox
+
+    def hook_write_mbox(out_root, verified_msgs, cancel_event=None):
+        # Trigger cancellation during write_mbox
+        cancel_ev.set()
+        return original_write_mbox(out_root, verified_msgs, cancel_event=cancel_ev)
+
+    monkeypatch.setattr(export_service_module, "write_mbox", hook_write_mbox)
+
+    result = service.run(output_root=tmp_path, cancel_event=cancel_ev)
+
+    assert result.cancelled is True
+    assert result.completed_this_run == 3
+    assert result.failed == 0
+    assert result.report_path is None
+    assert not (tmp_path / "mailbox.mbox").exists()
+    assert not (tmp_path / "mailbox.mbox.part").exists()
+    assert not (tmp_path / "export-report.html").exists()
+
+
+def test_export_service_resume_after_phase_3_cancellation(tmp_path: Path) -> None:
+    store = CheckpointStore(tmp_path / "export.sqlite3")
+    store.set_metadata(account_email="alice@example.com", export_scope="all_mail")
+
+    msg_map = {
+        "m1": b"From: a@example.com\r\nSubject: 1\r\n\r\nBody 1\r\n",
+        "m2": b"From: b@example.com\r\nSubject: 2\r\n\r\nBody 2\r\n",
+    }
+    fake_client = FakeGmailClient(message_map=msg_map)
+    policy, _ = _make_test_policy()
+    service = ExportService(fake_client, store, policy)  # type: ignore[arg-type]
+
+    # 1. Run and cancel right when Phase 3 starts
+    cancel_ev = threading.Event()
+
+    def on_progress(p: ExportProgress) -> None:
+        if p.phase == ExportPhase.MESSAGE_COMPLETED and p.message_id == "m2":
+            cancel_ev.set()
+
+    res1 = service.run(output_root=tmp_path, cancel_event=cancel_ev, progress_callback=on_progress)
+    assert res1.cancelled is True
+    assert not (tmp_path / "mailbox.mbox").exists()
+    assert not (tmp_path / "export-report.html").exists()
+
+    # 2. Resume without cancellation
+    res2 = service.run(output_root=tmp_path)
+    assert res2.cancelled is False
+    assert res2.archive_verified is True
+    assert res2.completed_this_run == 0
+    assert res2.skipped_completed == 2
+    assert (tmp_path / "mailbox.mbox").is_file()
+    assert (tmp_path / "checksums.sha256").is_file()
+    assert (tmp_path / "export-report.html").is_file()
+
+    read_mbox = mailbox.mbox(str(tmp_path / "mailbox.mbox"))
+    try:
+        assert len(read_mbox) == 2
+    finally:
+        read_mbox.close()
+
+    report_html = (tmp_path / "export-report.html").read_text(encoding="utf-8")
+    assert "VERIFIED COMPLETE" in report_html

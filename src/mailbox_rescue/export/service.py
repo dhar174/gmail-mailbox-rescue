@@ -480,7 +480,33 @@ class ExportService:
                 metadata_warnings=metadata_warnings,
             )
 
-        verification_result = verify_archive(output_root, self._checkpoint_store)
+        verification_result = verify_archive(
+            output_root,
+            self._checkpoint_store,
+            cancel_event=cancel_event,
+        )
+        if verification_result.cancelled or (cancel_event and cancel_event.is_set()):
+            if progress_callback:
+                progress_callback(
+                    ExportProgress(
+                        phase=ExportPhase.CANCELLED,
+                        total_messages=total_scanned,
+                        current_index=total_scanned,
+                        completed_this_run=completed_this_run,
+                        skipped_completed=skipped_completed,
+                        failed_this_run=len(failures),
+                    )
+                )
+            return ExportResult(
+                total_scanned=total_scanned,
+                completed_this_run=completed_this_run,
+                skipped_completed=skipped_completed,
+                failed=len(failures),
+                cancelled=True,
+                failures=failures,
+                metadata_warnings=metadata_warnings,
+            )
+
         all_completed = self._checkpoint_store.list_completed()
         verified_messages = verification_result.verified_messages
 
@@ -492,8 +518,78 @@ class ExportService:
                 completed_messages=verified_messages,
                 warnings_collector=metadata_warnings,
             )
+            if cancel_event and cancel_event.is_set():
+                if progress_callback:
+                    progress_callback(
+                        ExportProgress(
+                            phase=ExportPhase.CANCELLED,
+                            total_messages=total_scanned,
+                            current_index=total_scanned,
+                            completed_this_run=completed_this_run,
+                            skipped_completed=skipped_completed,
+                            failed_this_run=len(failures),
+                        )
+                    )
+                return ExportResult(
+                    total_scanned=total_scanned,
+                    completed_this_run=completed_this_run,
+                    skipped_completed=skipped_completed,
+                    failed=len(failures),
+                    cancelled=True,
+                    failures=failures,
+                    metadata_warnings=metadata_warnings,
+                )
+
             write_manifest(output_root, verified_messages)
-            write_mbox(output_root, verified_messages)
+            if cancel_event and cancel_event.is_set():
+                if progress_callback:
+                    progress_callback(
+                        ExportProgress(
+                            phase=ExportPhase.CANCELLED,
+                            total_messages=total_scanned,
+                            current_index=total_scanned,
+                            completed_this_run=completed_this_run,
+                            skipped_completed=skipped_completed,
+                            failed_this_run=len(failures),
+                        )
+                    )
+                return ExportResult(
+                    total_scanned=total_scanned,
+                    completed_this_run=completed_this_run,
+                    skipped_completed=skipped_completed,
+                    failed=len(failures),
+                    cancelled=True,
+                    failures=failures,
+                    metadata_warnings=metadata_warnings,
+                )
+
+            mbox_path = write_mbox(
+                output_root,
+                verified_messages,
+                cancel_event=cancel_event,
+            )
+            if mbox_path is None or (cancel_event and cancel_event.is_set()):
+                if progress_callback:
+                    progress_callback(
+                        ExportProgress(
+                            phase=ExportPhase.CANCELLED,
+                            total_messages=total_scanned,
+                            current_index=total_scanned,
+                            completed_this_run=completed_this_run,
+                            skipped_completed=skipped_completed,
+                            failed_this_run=len(failures),
+                        )
+                    )
+                return ExportResult(
+                    total_scanned=total_scanned,
+                    completed_this_run=completed_this_run,
+                    skipped_completed=skipped_completed,
+                    failed=len(failures),
+                    cancelled=True,
+                    failures=failures,
+                    metadata_warnings=metadata_warnings,
+                )
+
             export_metadata = self._checkpoint_store.get_metadata()
 
             intermediate_result = ExportResult(

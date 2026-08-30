@@ -80,8 +80,23 @@ def verify_manifest(
             ],
             is_valid=False,
         )
+    try:
+        content = target.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        return ManifestVerificationResult(
+            total_entries=0,
+            verified_entries=0,
+            failures=[
+                ManifestEntryFailure(
+                    relative_path=str(target),
+                    expected_sha256="",
+                    actual_sha256=None,
+                    reason=f"manifest_read_error: {exc}",
+                )
+            ],
+            is_valid=False,
+        )
 
-    content = target.read_text(encoding="utf-8")
     lines = [line.strip() for line in content.splitlines() if line.strip()]
 
     total_entries = len(lines)

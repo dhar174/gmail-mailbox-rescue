@@ -1,6 +1,10 @@
 import hashlib
+import threading
 from pathlib import Path
 
+import pytest
+
+import mailbox_rescue.export.verify as verify_module
 from mailbox_rescue.export.verify import (
     resolve_safe_relative_path,
     verify_archive,
@@ -185,3 +189,42 @@ def test_verify_archive_full_pass(tmp_path: Path) -> None:
     assert len(tampered_result.failures) == 1
     assert tampered_result.failures[0].message_id == "m2"
     assert "sha256_mismatch" in tampered_result.failures[0].reason
+
+
+def test_verify_archive_responsive_to_cancellation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "archive"
+    messages_dir = root / "messages"
+    messages_dir.mkdir(parents=True)
+    store = CheckpointStore(root / "export.sqlite3")
+
+    for i in range(3):
+        msg_id = f"m{i}"
+        payload = f"Message {i}".encode()
+        (messages_dir / f"{msg_id}.eml").write_bytes(payload)
+        store.mark_completed(
+            CompletedMessage(
+                message_id=msg_id,
+                relative_path=f"messages/{msg_id}.eml",
+                sha256=hashlib.sha256(payload).hexdigest(),
+                size_bytes=len(payload),
+            )
+        )
+
+    cancel_event = threading.Event()
+    original_verify = verify_module.verify_completed_message
+
+    def hook_verify(out_root, comp):
+        if comp.message_id == "m1":
+            cancel_event.set()
+        return original_verify(out_root, comp)
+
+    monkeypatch.setattr(verify_module, "verify_completed_message", hook_verify)
+
+    result = verify_archive(root, store, cancel_event=cancel_event)
+    assert result.cancelled is True
+    assert result.is_valid is False
+    # m0 and m1 succeeded before cancellation stopped m2 from being verified
+    assert result.verified_count == 2
+    assert [m.message_id for m in result.verified_messages] == ["m0", "m1"]

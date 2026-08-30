@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -13,6 +14,7 @@ from mailbox_rescue.storage.checkpoint import CheckpointStore, CompletedMessage
 class VerificationResult:
     verified_messages: list[CompletedMessage] = field(default_factory=list)
     failures: list[VerificationFailure] = field(default_factory=list)
+    cancelled: bool = False
 
     @property
     def verified_count(self) -> int:
@@ -20,7 +22,7 @@ class VerificationResult:
 
     @property
     def is_valid(self) -> bool:
-        return not self.failures
+        return not self.failures and not self.cancelled
 
 
 def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
@@ -117,15 +119,24 @@ def verify_completed_message(
 def verify_archive(
     output_root: Path,
     checkpoint_store: CheckpointStore,
+    cancel_event: threading.Event | None = None,
 ) -> VerificationResult:
     """
     Perform a complete verification pass across all completed messages in checkpoint_store.
+    Supports responsive cancellation at message boundaries.
     """
     completed_messages = checkpoint_store.list_completed()
     verified_messages: list[CompletedMessage] = []
     failures: list[VerificationFailure] = []
 
     for completed in completed_messages:
+        if cancel_event and cancel_event.is_set():
+            return VerificationResult(
+                verified_messages=verified_messages,
+                failures=failures,
+                cancelled=True,
+            )
+
         valid, reason = verify_completed_message(output_root, completed)
         if valid:
             verified_messages.append(completed)
@@ -141,4 +152,5 @@ def verify_archive(
     return VerificationResult(
         verified_messages=verified_messages,
         failures=failures,
+        cancelled=False,
     )
