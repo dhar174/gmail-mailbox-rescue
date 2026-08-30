@@ -100,7 +100,7 @@ class GmailClient:
             .get(userId="me", id=message_id, format="raw")
             .execute()
         )
-        raw_encoded = message.get("raw", "")
+        raw_encoded = message["raw"]
         return GmailExportMessage(
             message_id=message.get("id", message_id),
             thread_id=message.get("threadId", ""),

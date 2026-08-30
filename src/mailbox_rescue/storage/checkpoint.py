@@ -164,7 +164,7 @@ class CheckpointStore:
                         captured_at = excluded.captured_at
                     """,
                     (
-                        message_metadata.message_id,
+                        message.message_id,
                         message_metadata.thread_id,
                         message_metadata.labels_json,
                         message_metadata.captured_at,
