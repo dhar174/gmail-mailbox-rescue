@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from google.oauth2.credentials import Credentials
 
-from mailbox_rescue.auth.google_oauth import GoogleOAuth
+from mailbox_rescue.auth.google_oauth import GoogleOAuth, OAuthConfigurationError
 
 
 def test_save_creates_final_token_and_removes_temp(tmp_path: Path) -> None:
@@ -95,3 +95,19 @@ def test_save_posix_permission_failure_does_not_abort_save(tmp_path: Path) -> No
 
     assert token_file.is_file()
     assert token_file.read_text(encoding="utf-8") == '{"token": "posix_test_token"}'
+
+
+def test_authorize_missing_client_secrets_raises_friendly_error(tmp_path: Path) -> None:
+    token_file = tmp_path / "google_token.json"
+    client_secrets = tmp_path / "client_secret.json"
+    oauth = GoogleOAuth(client_secrets_file=client_secrets, token_file=token_file)
+
+    with pytest.raises(OAuthConfigurationError) as exc_info:
+        oauth.authorize()
+
+    message = str(exc_info.value)
+    assert "Google sign-in configuration was not found" in message
+    assert str(client_secrets) in message
+    assert "beside Mailbox Rescue.exe" in message
+    assert "MAILBOX_RESCUE_GOOGLE_CLIENT_SECRETS" in message
+

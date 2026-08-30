@@ -37,9 +37,11 @@ class GoogleOAuth:
 
         if not self.client_secrets_file.is_file():
             raise OAuthConfigurationError(
-                "Google OAuth client configuration was not found at "
-                f"{self.client_secrets_file}. Set MAILBOX_RESCUE_GOOGLE_CLIENT_SECRETS "
-                "or place client_secret.json in the working directory."
+                "Google sign-in configuration was not found.\n\n"
+                f"Expected:\n{self.client_secrets_file}\n\n"
+                "Contact the person who provided Mailbox Rescue or place the approved "
+                "Google OAuth configuration file beside Mailbox Rescue.exe.\n\n"
+                "(Advanced: You can also set the MAILBOX_RESCUE_GOOGLE_CLIENT_SECRETS environment variable.)"
             )
 
         flow = InstalledAppFlow.from_client_secrets_file(
