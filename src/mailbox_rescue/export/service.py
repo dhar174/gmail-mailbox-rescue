@@ -81,8 +81,10 @@ def invalidate_derived_archive(output_root: Path) -> None:
         try:
             if path.is_file() or path.is_symlink():
                 path.unlink()
-        except OSError:
-            pass
+        except OSError as exc:
+            raise FatalStorageError(
+                f"Failed to invalidate derived archive artifact '{path}': {exc}"
+            ) from exc
 
 
 class ExportService:
@@ -153,7 +155,7 @@ class ExportService:
             if progress_callback:
                 progress_callback(ExportProgress(phase=ExportPhase.CANCELLED))
             return ExportResult(
-                total_scanned=0,
+                total_scanned=len(scanned_ids),
                 completed_this_run=0,
                 skipped_completed=0,
                 failed=0,
