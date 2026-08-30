@@ -48,8 +48,10 @@ def check_resume_compatibility(
         existing_scope_display = "All Mail" if metadata.export_scope == "all_mail" else "Inbox only"
         return (
             False,
-            f"This folder contains an existing {existing_scope_display} export. "
-            f"Choose '{existing_scope_display}' to resume it or select a different destination.",
+            (
+                f"This folder contains an existing {existing_scope_display} export. "
+                f"Choose '{existing_scope_display}' to resume it or select a different destination."
+            ),
         )
     return True, None
 

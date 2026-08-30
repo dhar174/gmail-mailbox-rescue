@@ -546,7 +546,9 @@ def test_full_ui_export_flow_and_resume(qapp: object, tmp_path: Path) -> None:
 
     mock_client = MagicMock(spec=GmailClient)
     mock_client.iter_message_ids.return_value = iter(["msg_alpha", "msg_beta"])
-    mock_client.get_raw_message.side_effect = lambda msg_id: f"From: test@example.com\r\nSubject: {msg_id}\r\n\r\nBody".encode("utf-8")
+    mock_client.get_raw_message.side_effect = (
+        lambda msg_id: f"From: test@example.com\r\nSubject: {msg_id}\r\n\r\nBody".encode()
+    )
 
     window.gmail_client = mock_client
     window.mailbox_profile = MailboxProfile("user@example.com", 2, 1)
