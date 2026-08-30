@@ -286,9 +286,15 @@ class ExportService:
 
                     # Persist backfilled metadata
                     meta_record = self._build_message_metadata(export_msg, labels_map)
+                    if meta_record.message_id != msg_id:
+                        meta_record = MessageMetadata(
+                            message_id=msg_id,
+                            thread_id=meta_record.thread_id,
+                            labels_json=meta_record.labels_json,
+                            captured_at=meta_record.captured_at,
+                        )
                     try:
                         self._checkpoint_store.set_message_metadata(meta_record)
-                    except sqlite3.Error as db_exc:
                         raise FatalStorageError(
                             f"Fatal database error backfilling metadata for '{msg_id}': {db_exc}"
                         ) from db_exc
