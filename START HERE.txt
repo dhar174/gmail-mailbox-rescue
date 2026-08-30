@@ -9,6 +9,16 @@ portable files (.eml and .mbox) that you can open or import anytime.
 Your data remains 100% private and stays entirely on your local machine.
 
 
+PREREQUISITE:
+--------------------------------------------------------------------------------
+IMPORTANT: Mailbox Rescue requires a file named "client_secret.json" located
+directly beside "Mailbox Rescue.exe".
+
+  - If this file was already included in your folder, leave it where it is.
+  - If this file is missing, contact the person who provided Mailbox Rescue
+    to obtain the approved configuration file before attempting to connect.
+
+
 HOW TO RUN AN EXPORT:
 --------------------------------------------------------------------------------
 1. Double-click "Mailbox Rescue.exe".

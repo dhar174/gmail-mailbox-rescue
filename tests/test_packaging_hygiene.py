@@ -16,6 +16,18 @@ hygiene = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(hygiene)
 
 
+def _sample_installed_oauth_dict() -> dict[str, object]:
+    return {
+        "installed": {
+            "client_id": "test-client-id.apps.googleusercontent.com",
+            "client_secret": "test-client-secret-value",
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": ["http://localhost", "http://127.0.0.1"],
+        }
+    }
+
+
 def test_hygiene_passes_on_clean_directory(tmp_path: Path) -> None:
     bundle_dir = tmp_path / "Mailbox Rescue"
     bundle_dir.mkdir()
@@ -52,12 +64,22 @@ def test_hygiene_rejects_token_files(tmp_path: Path, token_name: str) -> None:
     [
         "export.sqlite3",
         "export.sqlite3-wal",
+        "export.sqlite3-shm",
+        "export.sqlite3-journal",
         "msg_123.eml",
         "partial.eml.part",
         "mailbox.mbox",
+        "mailbox.mbox.part",
         "checksums.sha256",
+        "checksums.sha256.part",
         "export-report.html",
+        "export-report.html.part",
+        "account.json",
+        "account.json.part",
+        "labels.json",
+        "labels.json.part",
         "messages.jsonl",
+        "messages.jsonl.part",
     ],
 )
 def test_hygiene_rejects_mail_and_checkpoint_artifacts(tmp_path: Path, data_file: str) -> None:
@@ -83,22 +105,118 @@ def test_hygiene_rejects_dev_cache_artifacts(tmp_path: Path) -> None:
     assert any("Prohibited development/cache artifact detected" in v for v in violations)
 
 
-def test_hygiene_client_secrets_unintended_vs_allowed(tmp_path: Path) -> None:
+def test_hygiene_one_valid_root_sidecar_allowed(tmp_path: Path) -> None:
     bundle_dir = tmp_path / "Mailbox Rescue"
     bundle_dir.mkdir()
-    (bundle_dir / "client_secret.json").write_text('{"installed": {}}', encoding="utf-8")
+    (bundle_dir / "Mailbox Rescue.exe").write_bytes(b"MZ dummy")
+    (bundle_dir / "client_secret.json").write_text(
+        json.dumps(_sample_installed_oauth_dict()), encoding="utf-8"
+    )
 
     # Without allow_oauth_client -> rejected
-    violations = hygiene.inspect_path(bundle_dir, allow_oauth_client=False)
-    assert len(violations) == 1
-    assert "Unexpected OAuth client secrets file detected" in violations[0]
+    violations_no_flag = hygiene.inspect_path(bundle_dir, allow_oauth_client=False)
+    assert len(violations_no_flag) == 1
+    assert "Unexpected or misplaced OAuth client secrets file detected" in violations_no_flag[0]
 
     # With allow_oauth_client -> permitted
     violations_ok = hygiene.inspect_path(bundle_dir, allow_oauth_client=True)
     assert violations_ok == []
 
 
-def test_hygiene_scans_zip_archive(tmp_path: Path) -> None:
+def test_hygiene_rejects_second_root_credential(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "Mailbox Rescue"
+    bundle_dir.mkdir()
+    (bundle_dir / "client_secret.json").write_text(
+        json.dumps(_sample_installed_oauth_dict()), encoding="utf-8"
+    )
+    (bundle_dir / "client_secret_old.json").write_text(
+        json.dumps(_sample_installed_oauth_dict()), encoding="utf-8"
+    )
+
+    violations = hygiene.inspect_path(bundle_dir, allow_oauth_client=True)
+    assert len(violations) >= 1
+    assert any("Unexpected or misplaced OAuth client secrets file detected" in v for v in violations)
+
+
+def test_hygiene_rejects_nested_credential(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "Mailbox Rescue"
+    bundle_dir.mkdir()
+    (bundle_dir / "client_secret.json").write_text(
+        json.dumps(_sample_installed_oauth_dict()), encoding="utf-8"
+    )
+    nested = bundle_dir / "nested"
+    nested.mkdir()
+    (nested / "client_secret_dev.json").write_text(
+        json.dumps(_sample_installed_oauth_dict()), encoding="utf-8"
+    )
+
+    violations = hygiene.inspect_path(bundle_dir, allow_oauth_client=True)
+    assert len(violations) >= 1
+    assert any("Unexpected or misplaced OAuth client secrets file detected" in v for v in violations)
+
+
+def test_hygiene_rejects_only_nested_credential(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "Mailbox Rescue"
+    nested = bundle_dir / "nested"
+    nested.mkdir(parents=True)
+    (nested / "client_secret.json").write_text(
+        json.dumps(_sample_installed_oauth_dict()), encoding="utf-8"
+    )
+
+    violations = hygiene.inspect_path(bundle_dir, allow_oauth_client=True)
+    assert len(violations) == 1
+    assert "Unexpected or misplaced OAuth client secrets file detected" in violations[0]
+
+
+def test_hygiene_rejects_malformed_root_config(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "Mailbox Rescue"
+    bundle_dir.mkdir()
+    (bundle_dir / "client_secret.json").write_text(
+        json.dumps({"web": {}}), encoding="utf-8"
+    )
+
+    violations = hygiene.inspect_path(bundle_dir, allow_oauth_client=True)
+    assert len(violations) >= 1
+    assert any("Invalid staged OAuth client config" in v for v in violations)
+
+
+def test_hygiene_zip_one_valid_root_sidecar(tmp_path: Path) -> None:
+    zip_path = tmp_path / "release.zip"
+    valid_content = json.dumps(_sample_installed_oauth_dict()).encode("utf-8")
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("Mailbox Rescue/Mailbox Rescue.exe", b"MZ dummy")
+        zf.writestr("Mailbox Rescue/client_secret.json", valid_content)
+
+    violations = hygiene.inspect_path(zip_path, allow_oauth_client=True)
+    assert violations == []
+
+
+def test_hygiene_zip_rejects_extra_or_nested_secrets(tmp_path: Path) -> None:
+    zip_path = tmp_path / "release.zip"
+    valid_content = json.dumps(_sample_installed_oauth_dict()).encode("utf-8")
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("Mailbox Rescue/Mailbox Rescue.exe", b"MZ dummy")
+        zf.writestr("Mailbox Rescue/client_secret.json", valid_content)
+        zf.writestr("Mailbox Rescue/nested/client_secret_extra.json", valid_content)
+
+    violations = hygiene.inspect_path(zip_path, allow_oauth_client=True)
+    assert len(violations) >= 1
+    assert any("Unexpected or misplaced OAuth client secrets file detected" in v for v in violations)
+
+
+def test_hygiene_zip_rejects_malformed_sidecar(tmp_path: Path) -> None:
+    zip_path = tmp_path / "release.zip"
+    bad_content = b'{"web": {}}'
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("Mailbox Rescue/Mailbox Rescue.exe", b"MZ dummy")
+        zf.writestr("Mailbox Rescue/client_secret.json", bad_content)
+
+    violations = hygiene.inspect_path(zip_path, allow_oauth_client=True)
+    assert len(violations) >= 1
+    assert any("Invalid staged OAuth client config" in v for v in violations)
+
+
+def test_hygiene_scans_zip_archive_prohibited_tokens(tmp_path: Path) -> None:
     zip_path = tmp_path / "release.zip"
     with zipfile.ZipFile(zip_path, "w") as zf:
         zf.writestr("Mailbox Rescue/Mailbox Rescue.exe", b"MZ dummy")
@@ -136,18 +254,6 @@ def test_hygiene_cli_main(tmp_path: Path, capsys: pytest.CaptureFixture[str]) ->
 # --------------------------------------------------------------------------
 # OAuth Client Configuration Validation Tests
 # --------------------------------------------------------------------------
-
-
-def _sample_installed_oauth_dict() -> dict[str, object]:
-    return {
-        "installed": {
-            "client_id": "test-client-id.apps.googleusercontent.com",
-            "client_secret": "test-client-secret-value",
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "redirect_uris": ["http://localhost", "http://127.0.0.1"],
-        }
-    }
 
 
 @pytest.mark.parametrize(
@@ -286,17 +392,87 @@ def test_validate_oauth_client_config_missing_required_keys(
     assert f"Missing required key '{missing_key}'" in errors[0]
 
 
+def test_validate_oauth_client_config_auth_uri_validation(tmp_path: Path) -> None:
+    config = _sample_installed_oauth_dict()
+    installed = config["installed"]
+    assert isinstance(installed, dict)
+
+    # Attacker-controlled auth_uri
+    installed["auth_uri"] = "https://evil.example/oauth"
+    bad_file = tmp_path / "client_secret_bad.json"
+    bad_file.write_text(json.dumps(config), encoding="utf-8")
+
+    errors = hygiene.validate_oauth_client_config(bad_file)
+    assert len(errors) == 1
+    assert "Invalid 'auth_uri'" in errors[0]
+    assert "Expected official Google authorization endpoint" in errors[0]
+
+    # Valid v2 auth_uri
+    installed["auth_uri"] = "https://accounts.google.com/o/oauth2/v2/auth"
+    good_file = tmp_path / "client_secret.json"
+    good_file.write_text(json.dumps(config), encoding="utf-8")
+
+    assert hygiene.validate_oauth_client_config(good_file) == []
+
+
+def test_validate_oauth_client_config_token_uri_validation(tmp_path: Path) -> None:
+    config = _sample_installed_oauth_dict()
+    installed = config["installed"]
+    assert isinstance(installed, dict)
+
+    # Attacker-controlled token_uri
+    installed["token_uri"] = "https://evil.example/token"
+    bad_file = tmp_path / "client_secret_bad.json"
+    bad_file.write_text(json.dumps(config), encoding="utf-8")
+
+    errors = hygiene.validate_oauth_client_config(bad_file)
+    assert len(errors) == 1
+    assert "Invalid 'token_uri'" in errors[0]
+    assert "Expected official Google token endpoint" in errors[0]
+
+    # Alternate valid Google token_uri
+    installed["token_uri"] = "https://accounts.google.com/o/oauth2/token"
+    good_file = tmp_path / "client_secret.json"
+    good_file.write_text(json.dumps(config), encoding="utf-8")
+
+    assert hygiene.validate_oauth_client_config(good_file) == []
+
+
+@pytest.mark.parametrize(
+    "bad_client_id",
+    [
+        "my-client-id",
+        "client-12345.example.com",
+        ".apps.googleusercontent.com",
+        "   ",
+    ],
+)
+def test_validate_oauth_client_config_rejects_non_google_client_id(
+    tmp_path: Path, bad_client_id: str
+) -> None:
+    config = _sample_installed_oauth_dict()
+    installed = config["installed"]
+    assert isinstance(installed, dict)
+    installed["client_id"] = bad_client_id
+
+    config_file = tmp_path / "client_secret.json"
+    config_file.write_text(json.dumps(config), encoding="utf-8")
+
+    errors = hygiene.validate_oauth_client_config(config_file)
+    assert len(errors) == 1
+    assert "client_id" in errors[0]
+
+
 @pytest.mark.parametrize(
     ("field", "bad_value"),
     [
-        ("client_id", ""),
-        ("client_id", "   "),
         ("client_secret", 12345),
+        ("client_secret", "   "),
         ("auth_uri", None),
         ("token_uri", ""),
     ],
 )
-def test_validate_oauth_client_config_invalid_string_values(
+def test_validate_oauth_client_config_invalid_field_types(
     tmp_path: Path, field: str, bad_value: object
 ) -> None:
     config = _sample_installed_oauth_dict()
@@ -315,11 +491,13 @@ def test_validate_oauth_client_config_invalid_string_values(
 @pytest.mark.parametrize(
     "bad_redirect_uris",
     [
-        "http://localhost",  # string instead of list
-        [],                  # empty list
-        [""],                # list with empty string
-        ["http://localhost", "  "],
-        [123],               # non-string in list
+        "http://localhost",                  # string instead of list
+        [],                                  # empty list
+        [""],                                # list with empty string
+        ["http://localhost", "  "],          # whitespace item
+        [123],                               # non-string in list
+        ["https://evil.example/callback"],   # remote URL with no loopback
+        ["https://my-web-app.example/oauth"],
     ],
 )
 def test_validate_oauth_client_config_invalid_redirect_uris(

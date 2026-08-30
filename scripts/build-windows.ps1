@@ -51,14 +51,21 @@ if (-not $PythonExe) {
 }
 
 $PyVersion = python --version 2>&1
-Write-Host "Python: $PyVersion"
+$PointerBits = (python -c "import struct; print(struct.calcsize('P') * 8)" 2>&1).Trim()
+if ($PointerBits -ne "64") {
+    Write-Error "Mailbox Rescue win64 releases must be built with 64-bit Python. Detected: $PointerBits-bit Python."
+    exit 1
+}
 
 # Check PyInstaller availability
-$PyInstallerCheck = python -c "import PyInstaller; print(PyInstaller.__version__)" 2>&1
+$PyInstallerCheck = (python -c "import PyInstaller; print(PyInstaller.__version__)" 2>&1).Trim()
 if ($LASTEXITCODE -ne 0) {
     Write-Error "PyInstaller is not installed. Run: python -m pip install -e `".[dev]`""
     exit 1
 }
+
+Write-Host "Python: $PyVersion"
+Write-Host "Architecture: $PointerBits-bit"
 Write-Host "PyInstaller: v$PyInstallerCheck"
 
 # Package version
@@ -82,7 +89,7 @@ if ($Clean) {
 Write-Host "`nBuilding standalone executable with PyInstaller..." -ForegroundColor Green
 $SpecFile = Join-Path $RepoRoot "packaging\mailbox-rescue.spec"
 
-& python -m PyInstaller --clean $SpecFile --distpath $DistDir --workpath $BuildDir
+& python -m PyInstaller --noconfirm --clean $SpecFile --distpath $DistDir --workpath $BuildDir
 if ($LASTEXITCODE -ne 0) {
     Write-Error "PyInstaller build failed with exit code $LASTEXITCODE."
     exit 1

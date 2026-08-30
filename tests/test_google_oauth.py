@@ -108,6 +108,28 @@ def test_authorize_missing_client_secrets_raises_friendly_error(tmp_path: Path) 
     message = str(exc_info.value)
     assert "Google sign-in configuration was not found" in message
     assert str(client_secrets) in message
-    assert "beside Mailbox Rescue.exe" in message
+    assert "Place the approved Google OAuth configuration file at the path shown above" in message
     assert "MAILBOX_RESCUE_GOOGLE_CLIENT_SECRETS" in message
+    assert "contact them for the approved configuration file" in message
+
+
+def test_authorize_missing_client_secrets_with_env_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mailbox_rescue.config import AppPaths
+
+    custom_secrets = tmp_path / "custom_dir" / "custom_client_secret.json"
+    monkeypatch.setenv("MAILBOX_RESCUE_GOOGLE_CLIENT_SECRETS", str(custom_secrets))
+
+    paths = AppPaths.discover()
+    oauth = GoogleOAuth(client_secrets_file=paths.client_secrets_file, token_file=paths.token_file)
+
+    with pytest.raises(OAuthConfigurationError) as exc_info:
+        oauth.authorize()
+
+    message = str(exc_info.value)
+    assert "Google sign-in configuration was not found" in message
+    assert str(custom_secrets.resolve()) in message
+    assert "MAILBOX_RESCUE_GOOGLE_CLIENT_SECRETS" in message
+
 
