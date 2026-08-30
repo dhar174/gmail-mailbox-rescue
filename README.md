@@ -12,15 +12,14 @@ Mailbox Rescue does not need a hosted backend and is designed so OAuth tokens an
 
 Early MVP development. See [Issue #1](https://github.com/dhar174/gmail-mailbox-rescue/issues/1) for the MVP roadmap.
 
-The initial target is:
+The desktop export workflow is now available:
 
-1. Authenticate with Google using the installed-app OAuth flow.
-2. Read Gmail with the minimum read-only scope needed for export.
-3. Enumerate messages with pagination.
-4. Fetch the original RFC email source.
-5. Save each message locally as an `.eml` file.
-6. Record completed exports in SQLite so an interrupted run can resume.
-7. Add MBOX, labels, reporting, packaging, and UI polish after the core path is reliable.
+1. **Connect Google Account**: Authenticate via Google OAuth sign-in. The connected account summary is displayed and retained for the session.
+2. **Choose export scope**: Select **All Mail** (default, excludes Spam and Trash) or **Inbox only**.
+3. **Choose destination folder**: Select a local folder to store exported messages.
+4. **Start Export**: The exporter runs safely in the background, writing individual `.eml` files and tracking progress in a SQLite checkpoint database.
+5. **Cancel & resume**: Cancel at any time without losing completed progress; resume anytime by selecting the same folder with the same account and scope.
+
 
 ## Development setup
 

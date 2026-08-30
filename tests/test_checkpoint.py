@@ -6,7 +6,9 @@ import pytest
 from mailbox_rescue.storage.checkpoint import (
     CheckpointStore,
     CompletedMessage,
+    ExportMetadata,
     FailedMessage,
+    check_resume_compatibility,
 )
 
 
@@ -191,5 +193,67 @@ def test_checkpoint_mark_completed_transaction_integrity(tmp_path: Path) -> None
     assert not store.is_completed("msg_rollback")
     assert store.get_failure("msg_rollback") == failure
     assert store.failed_count() == 1
+
+
+def test_checkpoint_export_metadata_lifecycle(tmp_path: Path) -> None:
+    store = CheckpointStore(tmp_path / "export.sqlite3")
+
+    # Initial state is empty
+    assert store.get_metadata() is None
+
+    # Set metadata for first time
+    store.set_metadata("user@example.com", "all_mail")
+    meta = store.get_metadata()
+    assert isinstance(meta, ExportMetadata)
+    assert meta.account_email == "user@example.com"
+    assert meta.export_scope == "all_mail"
+    assert meta.created_at is not None
+    assert meta.last_updated_at is not None
+
+    # Update metadata (e.g. scope change or refresh)
+    initial_created_at = meta.created_at
+    store.set_metadata("user@example.com", "inbox")
+    updated = store.get_metadata()
+    assert updated is not None
+    assert updated.account_email == "user@example.com"
+    assert updated.export_scope == "inbox"
+    assert updated.created_at == initial_created_at
+
+
+def test_checkpoint_resume_compatibility_rules(tmp_path: Path) -> None:
+    store = CheckpointStore(tmp_path / "export.sqlite3")
+
+    # Fresh store with no metadata is compatible
+    compatible, reason = check_resume_compatibility(store, "user@example.com", "all_mail")
+    assert compatible is True
+    assert reason is None
+
+    # Store with recorded identity
+    store.set_metadata("user@example.com", "all_mail")
+
+    # 1. Same account + same scope -> compatible
+    compatible, reason = check_resume_compatibility(store, "user@example.com", "all_mail")
+    assert compatible is True
+    assert reason is None
+
+    # Case-insensitive email comparison
+    compatible, reason = check_resume_compatibility(store, "USER@example.COM", "all_mail")
+    assert compatible is True
+    assert reason is None
+
+    # 2. Different account -> rejected
+    compatible, reason = check_resume_compatibility(store, "other@example.com", "all_mail")
+    assert compatible is False
+    assert reason is not None
+    assert "user@example.com" in reason
+    assert "Choose a different folder" in reason
+
+    # 3. Same account + different scope -> rejected
+    compatible, reason = check_resume_compatibility(store, "user@example.com", "inbox")
+    assert compatible is False
+    assert reason is not None
+    assert "All Mail" in reason
+    assert "Choose 'All Mail' to resume" in reason
+
 
 

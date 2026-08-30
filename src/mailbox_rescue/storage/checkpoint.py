@@ -23,6 +23,37 @@ class FailedMessage:
     last_failed_at: str
 
 
+@dataclass(frozen=True, slots=True)
+class ExportMetadata:
+    account_email: str
+    export_scope: str
+    created_at: str
+    last_updated_at: str
+
+
+def check_resume_compatibility(
+    checkpoint_store: CheckpointStore,
+    account_email: str,
+    export_scope: str,
+) -> tuple[bool, str | None]:
+    metadata = checkpoint_store.get_metadata()
+    if metadata is None:
+        return True, None
+    if metadata.account_email.strip().lower() != account_email.strip().lower():
+        return (
+            False,
+            f"This export folder belongs to {metadata.account_email}. Choose a different folder.",
+        )
+    if metadata.export_scope != export_scope:
+        existing_scope_display = "All Mail" if metadata.export_scope == "all_mail" else "Inbox only"
+        return (
+            False,
+            f"This folder contains an existing {existing_scope_display} export. "
+            f"Choose '{existing_scope_display}' to resume it or select a different destination.",
+        )
+    return True, None
+
+
 class CheckpointStore:
     def __init__(self, database_path: Path) -> None:
         database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -164,6 +195,49 @@ class CheckpointStore:
             row = connection.execute("SELECT COUNT(*) FROM failed_messages").fetchone()
         return int(row[0])
 
+    def get_metadata(self) -> ExportMetadata | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT account_email, export_scope, created_at, last_updated_at
+                FROM export_metadata
+                LIMIT 1
+                """
+            ).fetchone()
+        if row is None:
+            return None
+        return ExportMetadata(
+            account_email=row[0],
+            export_scope=row[1],
+            created_at=row[2],
+            last_updated_at=row[3],
+        )
+
+    def set_metadata(self, account_email: str, export_scope: str) -> None:
+        now = datetime.now(UTC).isoformat()
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT created_at FROM export_metadata LIMIT 1"
+            ).fetchone()
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO export_metadata (
+                        account_email, export_scope, created_at, last_updated_at
+                    )
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (account_email, export_scope, now, now),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE export_metadata
+                    SET account_email = ?, export_scope = ?, last_updated_at = ?
+                    """,
+                    (account_email, export_scope, now),
+                )
+
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.database_path)
 
@@ -188,6 +262,16 @@ class CheckpointStore:
                     error_message TEXT NOT NULL,
                     attempt_count INTEGER NOT NULL,
                     last_failed_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS export_metadata (
+                    account_email TEXT NOT NULL,
+                    export_scope TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    last_updated_at TEXT NOT NULL
                 )
                 """
             )
