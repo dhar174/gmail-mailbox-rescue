@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from math import isfinite
+from pathlib import Path
 
 
 class ExportScope(StrEnum):
@@ -47,6 +48,13 @@ class ExportFailure:
 
 
 @dataclass(frozen=True, slots=True)
+class VerificationFailure:
+    message_id: str
+    relative_path: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
 class ExportResult:
     total_scanned: int
     completed_this_run: int
@@ -55,6 +63,11 @@ class ExportResult:
     cancelled: bool
     failures: list[ExportFailure] = field(default_factory=list)
     error_message: str | None = None
+    archive_verified: bool = False
+    verified_files: int = 0
+    verification_failures: list[VerificationFailure] = field(default_factory=list)
+    metadata_warnings: list[str] = field(default_factory=list)
+    report_path: Path | None = None
 
 
 def _default_jitter(max_jitter: float) -> float:
