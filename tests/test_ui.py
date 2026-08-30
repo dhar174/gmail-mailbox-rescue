@@ -1,18 +1,20 @@
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from PySide6.QtCore import QCoreApplication
+from PySide6.QtCore import QCoreApplication, QThread
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QMessageBox
 
 from mailbox_rescue.auth.google_oauth import OAuthConfigurationError
 from mailbox_rescue.config import AppPaths
 from mailbox_rescue.export.models import ExportPhase, ExportProgress, ExportResult, ExportScope
 from mailbox_rescue.gmail.client import GmailClient, MailboxProfile
-from mailbox_rescue.storage.checkpoint import CheckpointStore
+from mailbox_rescue.storage.checkpoint import CheckpointStore, CompletedMessage
 from mailbox_rescue.ui.main_window import MainWindow
 from mailbox_rescue.ui.worker import ExportWorker
 
@@ -26,6 +28,14 @@ def _create_test_window(tmp_path: Path) -> MainWindow:
         client_secrets_file=tmp_path / "secrets.json",
     )
     return MainWindow(paths)
+
+
+def _wait_for_export_to_finish(window: MainWindow, timeout_seconds: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while window._export_thread is not None and time.monotonic() < deadline:
+        QCoreApplication.processEvents()
+        time.sleep(0.01)
+    assert window._export_thread is None, "Export thread did not finish before timeout"
 
 
 def test_main_window_initial_state(qapp: object, tmp_path: Path) -> None:
@@ -85,6 +95,26 @@ def test_destination_selection_and_control_enabling(qapp: object, tmp_path: Path
     assert window.start_button.isEnabled() is True
 
 
+def test_destination_path_resolution_and_malformed_input(qapp: object, tmp_path: Path) -> None:
+    window = _create_test_window(tmp_path)
+
+    # Empty path -> None
+    window.set_destination("   ")
+    assert window._resolved_destination() is None
+    assert window.start_button.isEnabled() is False
+
+    # Home path expansion
+    window.set_destination("~")
+    resolved = window._resolved_destination()
+    assert resolved is not None
+    assert resolved == Path.home().resolve()
+
+    # Valid relative/absolute path
+    out_dir = tmp_path / "custom_out"
+    window.set_destination(str(out_dir))
+    assert window._resolved_destination() == out_dir.resolve()
+
+
 def test_connect_google_success_stores_client_and_updates_ui(
     qapp: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -117,10 +147,15 @@ def test_connect_google_success_stores_client_and_updates_ui(
     assert window.connect_button.isEnabled() is True
 
 
-def test_connect_google_oauth_config_error(
+def test_connect_google_oauth_config_error_clears_prior_state(
     qapp: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     window = _create_test_window(tmp_path)
+    window.gmail_client = MagicMock(spec=GmailClient)
+    window.mailbox_profile = MailboxProfile("prior@example.com", 50, 5)
+    window.connect_button.setText("Refresh Account")
+    window.set_destination(str(tmp_path / "out"))
+    assert window.start_button.isEnabled() is True
 
     mock_auth = MagicMock()
     mock_auth.return_value.authorize.side_effect = OAuthConfigurationError("Missing secrets file")
@@ -133,15 +168,21 @@ def test_connect_google_oauth_config_error(
 
     assert window.gmail_client is None
     assert window.mailbox_profile is None
+    assert window.connect_button.text() == "Connect Google Account"
     assert "Google OAuth configuration required" in window.account_status_label.text()
-    assert window.connect_button.isEnabled() is True
+    assert window.start_button.isEnabled() is False
     warning_mock.assert_called_once()
 
 
-def test_connect_google_general_error(
+def test_connect_google_general_error_clears_prior_state(
     qapp: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     window = _create_test_window(tmp_path)
+    window.gmail_client = MagicMock(spec=GmailClient)
+    window.mailbox_profile = MailboxProfile("prior@example.com", 50, 5)
+    window.connect_button.setText("Refresh Account")
+    window.set_destination(str(tmp_path / "out"))
+    assert window.start_button.isEnabled() is True
 
     mock_auth = MagicMock()
     mock_auth.return_value.authorize.side_effect = ConnectionResetError("Connection dropped")
@@ -154,8 +195,9 @@ def test_connect_google_general_error(
 
     assert window.gmail_client is None
     assert window.mailbox_profile is None
+    assert window.connect_button.text() == "Connect Google Account"
     assert "Connection failed" in window.account_status_label.text()
-    assert window.connect_button.isEnabled() is True
+    assert window.start_button.isEnabled() is False
     critical_mock.assert_called_once()
 
 
@@ -239,6 +281,52 @@ def test_resume_identity_validation_incompatible_scope(
     args, _ = warning_mock.call_args
     assert "Inbox only" in args[2]
     assert window._export_thread is None
+
+
+def test_resume_confirmation_prompt_accept_and_decline(
+    qapp: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dest = tmp_path / "resume_dest"
+    checkpoint_dir = dest / "metadata"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    existing_store = CheckpointStore(checkpoint_dir / "checkpoint.sqlite3")
+    existing_store.set_metadata("employee@company.com", "all_mail")
+    existing_store.mark_completed(
+        CompletedMessage(
+            message_id="prior_msg",
+            relative_path="messages/prior_msg.eml",
+            sha256="f" * 64,
+            size_bytes=50,
+        )
+    )
+
+    window = _create_test_window(tmp_path)
+    window.gmail_client = MagicMock(spec=GmailClient)
+    window.mailbox_profile = MailboxProfile("employee@company.com", 100, 10)
+    window.set_destination(str(dest))
+
+    # 1. User declines resume
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.No,
+    )
+    window.start_export()
+    assert window._export_thread is None
+
+    # 2. User accepts resume
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
+    monkeypatch.setattr(
+        "mailbox_rescue.ui.worker.ExportService.run",
+        lambda *args, **kwargs: ExportResult(1, 0, 1, 0, False),
+    )
+    window.start_export()
+    assert window._export_thread is not None
+    _wait_for_export_to_finish(window)
 
 
 def test_export_worker_signals_and_service_execution(
@@ -429,13 +517,20 @@ def test_export_completed_partial_success_updates_ui(qapp: object, tmp_path: Pat
     assert window.connect_button.isEnabled() is True
 
 
-def test_export_completed_cancelled_updates_ui(qapp: object, tmp_path: Path) -> None:
+def test_export_completed_cancelled_scan_sets_determinate_progress(
+    qapp: object, tmp_path: Path
+) -> None:
     window = _create_test_window(tmp_path)
     window.destination_path = str(tmp_path)
 
+    # Set indeterminate during scan
+    window._on_export_progress(ExportProgress(phase=ExportPhase.SCANNING))
+    assert window.progress_bar.maximum() == 0
+
+    # Cancelled during scan
     result = ExportResult(
-        total_scanned=50,
-        completed_this_run=20,
+        total_scanned=0,
+        completed_this_run=0,
         skipped_completed=0,
         failed=0,
         cancelled=True,
@@ -443,7 +538,8 @@ def test_export_completed_cancelled_updates_ui(qapp: object, tmp_path: Path) -> 
     window._on_export_completed(result)
 
     assert "Export cancelled safely" in window.progress_status_label.text()
-    assert "Saved: 20" in window.progress_detail_label.text()
+    assert window.progress_bar.maximum() == 1
+    assert window.progress_bar.value() == 0
     assert window.connect_button.isEnabled() is True
 
 
@@ -464,7 +560,7 @@ def test_export_failed_fatal_error_updates_ui(
 
 
 def test_cancel_button_sets_event_and_updates_ui(
-    qapp: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    qapp: object, tmp_path: Path
 ) -> None:
     window = _create_test_window(tmp_path)
     window.destination_path = str(tmp_path)
@@ -478,6 +574,59 @@ def test_cancel_button_sets_event_and_updates_ui(
     assert window.progress_status_label.text() == "Cancelling safely..."
 
 
+def test_close_event_idle_accepts_immediately(qapp: object, tmp_path: Path) -> None:
+    window = _create_test_window(tmp_path)
+    event = QCloseEvent()
+
+    window.closeEvent(event)
+    assert event.isAccepted() is True
+
+
+def test_close_event_during_export_prompt_and_deferral(
+    qapp: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    window = _create_test_window(tmp_path)
+    window.cancel_event = threading.Event()
+    mock_thread = MagicMock(spec=QThread)
+    mock_thread.isRunning.return_value = True
+    window._export_thread = mock_thread
+
+    # 1. User declines cancel & close
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.No,
+    )
+    event1 = QCloseEvent()
+    window.closeEvent(event1)
+    assert event1.isAccepted() is False
+    assert window.cancel_event.is_set() is False
+    assert window._close_pending is False
+
+    # 2. User confirms cancel & close
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
+    event2 = QCloseEvent()
+    window.closeEvent(event2)
+    assert event2.isAccepted() is False
+    assert window.cancel_event.is_set() is True
+    assert window._close_pending is True
+
+    # 3. Thread finish executes deferred close
+    close_called = False
+
+    def mock_close():
+        nonlocal close_called
+        close_called = True
+
+    monkeypatch.setattr(window, "close", mock_close)
+    window._on_export_thread_finished()
+    assert close_called is True
+
+
 def test_export_lifecycle_and_reusability(
     qapp: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -487,7 +636,6 @@ def test_export_lifecycle_and_reusability(
     window.mailbox_profile = MailboxProfile("user@example.com", 10, 2)
     window.set_destination(str(dest))
 
-    # Mock service run to complete synchronously
     def mock_service_run(*args, **kwargs):
         return ExportResult(
             total_scanned=2,
@@ -502,21 +650,22 @@ def test_export_lifecycle_and_reusability(
     # 1. Start first export
     window.start_export()
     assert window._export_thread is not None
-
-    # Process events to allow QThread / worker run to finish
-    while window._export_thread is not None:
-        QCoreApplication.processEvents()
+    _wait_for_export_to_finish(window)
 
     assert window.progress_status_label.text() == "Export complete."
     assert window.start_button.isEnabled() is True
     assert window.connect_button.isEnabled() is True
 
     # 2. Start second export in the same app session
+    # Mock resume confirmation dialog
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
     window.start_export()
     assert window._export_thread is not None
-
-    while window._export_thread is not None:
-        QCoreApplication.processEvents()
+    _wait_for_export_to_finish(window)
 
     assert window.progress_status_label.text() == "Export complete."
     assert window.start_button.isEnabled() is True
@@ -540,7 +689,9 @@ def test_open_export_folder(
     assert export_dir.name in url_arg.toString()
 
 
-def test_full_ui_export_flow_and_resume(qapp: object, tmp_path: Path) -> None:
+def test_full_ui_export_flow_and_resume(
+    qapp: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     dest = tmp_path / "full_export"
     window = _create_test_window(tmp_path)
 
@@ -556,8 +707,7 @@ def test_full_ui_export_flow_and_resume(qapp: object, tmp_path: Path) -> None:
 
     # First run: exports both messages
     window.start_export()
-    while window._export_thread is not None:
-        QCoreApplication.processEvents()
+    _wait_for_export_to_finish(window)
 
     assert (dest / "messages" / "msg_alpha.eml").exists()
     assert (dest / "messages" / "msg_beta.eml").exists()
@@ -566,13 +716,16 @@ def test_full_ui_export_flow_and_resume(qapp: object, tmp_path: Path) -> None:
     assert "Saved: 2" in window.progress_detail_label.text()
     assert window.open_folder_button.isEnabled() is True
 
-    # Second run: resumes and skips both messages
+    # Second run: user confirms resume, skips both messages
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+    )
     mock_client.iter_message_ids.return_value = iter(["msg_alpha", "msg_beta"])
     window.start_export()
-    while window._export_thread is not None:
-        QCoreApplication.processEvents()
+    _wait_for_export_to_finish(window)
 
     assert window.progress_status_label.text() == "Export complete."
     assert "Saved: 0" in window.progress_detail_label.text()
     assert "Already saved: 2" in window.progress_detail_label.text()
-

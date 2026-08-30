@@ -38,6 +38,14 @@ def check_resume_compatibility(
 ) -> tuple[bool, str | None]:
     metadata = checkpoint_store.get_metadata()
     if metadata is None:
+        if checkpoint_store.completed_count() > 0 or checkpoint_store.failed_count() > 0:
+            return (
+                False,
+                (
+                    "This export folder contains an older checkpoint that is not bound to a Google account. "
+                    "Choose a new folder for this export."
+                ),
+            )
         return True, None
     if metadata.account_email.strip().lower() != account_email.strip().lower():
         return (
@@ -203,7 +211,7 @@ class CheckpointStore:
                 """
                 SELECT account_email, export_scope, created_at, last_updated_at
                 FROM export_metadata
-                LIMIT 1
+                WHERE id = 1
                 """
             ).fetchone()
         if row is None:
@@ -218,27 +226,19 @@ class CheckpointStore:
     def set_metadata(self, account_email: str, export_scope: str) -> None:
         now = datetime.now(UTC).isoformat()
         with self._connect() as connection:
-            existing = connection.execute(
-                "SELECT created_at FROM export_metadata LIMIT 1"
-            ).fetchone()
-            if existing is None:
-                connection.execute(
-                    """
-                    INSERT INTO export_metadata (
-                        account_email, export_scope, created_at, last_updated_at
-                    )
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (account_email, export_scope, now, now),
+            connection.execute(
+                """
+                INSERT INTO export_metadata (
+                    id, account_email, export_scope, created_at, last_updated_at
                 )
-            else:
-                connection.execute(
-                    """
-                    UPDATE export_metadata
-                    SET account_email = ?, export_scope = ?, last_updated_at = ?
-                    """,
-                    (account_email, export_scope, now),
-                )
+                VALUES (1, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    account_email = excluded.account_email,
+                    export_scope = excluded.export_scope,
+                    last_updated_at = excluded.last_updated_at
+                """,
+                (account_email, export_scope, now, now),
+            )
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.database_path)
@@ -267,13 +267,50 @@ class CheckpointStore:
                 )
                 """
             )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS export_metadata (
-                    account_email TEXT NOT NULL,
-                    export_scope TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    last_updated_at TEXT NOT NULL
+            columns = [
+                row[1]
+                for row in connection.execute("PRAGMA table_info(export_metadata)").fetchall()
+            ]
+            if columns and "id" not in columns:
+                row = connection.execute(
+                    """
+                    SELECT account_email, export_scope, created_at, last_updated_at
+                    FROM export_metadata
+                    ORDER BY rowid ASC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                connection.execute("DROP TABLE export_metadata")
+                connection.execute(
+                    """
+                    CREATE TABLE export_metadata (
+                        id INTEGER PRIMARY KEY CHECK (id = 1),
+                        account_email TEXT NOT NULL,
+                        export_scope TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        last_updated_at TEXT NOT NULL
+                    )
+                    """
                 )
-                """
-            )
+                if row is not None:
+                    connection.execute(
+                        """
+                        INSERT INTO export_metadata (
+                            id, account_email, export_scope, created_at, last_updated_at
+                        )
+                        VALUES (1, ?, ?, ?, ?)
+                        """,
+                        row,
+                    )
+            else:
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS export_metadata (
+                        id INTEGER PRIMARY KEY CHECK (id = 1),
+                        account_email TEXT NOT NULL,
+                        export_scope TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        last_updated_at TEXT NOT NULL
+                    )
+                    """
+                )

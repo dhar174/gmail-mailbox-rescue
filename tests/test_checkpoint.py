@@ -223,7 +223,7 @@ def test_checkpoint_export_metadata_lifecycle(tmp_path: Path) -> None:
 def test_checkpoint_resume_compatibility_rules(tmp_path: Path) -> None:
     store = CheckpointStore(tmp_path / "export.sqlite3")
 
-    # Fresh store with no metadata is compatible
+    # Fresh store with no metadata and no messages is compatible
     compatible, reason = check_resume_compatibility(store, "user@example.com", "all_mail")
     assert compatible is True
     assert reason is None
@@ -254,6 +254,87 @@ def test_checkpoint_resume_compatibility_rules(tmp_path: Path) -> None:
     assert reason is not None
     assert "All Mail" in reason
     assert "Choose 'All Mail' to resume" in reason
+
+
+def test_checkpoint_legacy_unbound_checkpoints_fail_closed(tmp_path: Path) -> None:
+    db_path = tmp_path / "legacy.sqlite3"
+    store = CheckpointStore(db_path)
+
+    # 1. Store with completed message but no metadata -> Rejected
+    store.mark_completed(
+        CompletedMessage(
+            message_id="legacy_msg_1",
+            relative_path="messages/legacy_msg_1.eml",
+            sha256="e" * 64,
+            size_bytes=100,
+        )
+    )
+    assert store.get_metadata() is None
+    compatible, reason = check_resume_compatibility(store, "user@example.com", "all_mail")
+    assert compatible is False
+    assert reason is not None
+    assert "older checkpoint that is not bound" in reason
+
+    # 2. Store with failed message but no metadata -> Rejected
+    db_path2 = tmp_path / "legacy_failed.sqlite3"
+    store2 = CheckpointStore(db_path2)
+    store2.mark_failed(
+        FailedMessage(
+            message_id="fail_1",
+            error_type="HttpError",
+            error_message="503",
+            attempt_count=2,
+            last_failed_at="2026-08-28T00:00:00+00:00",
+        )
+    )
+    assert store2.get_metadata() is None
+    compatible, reason = check_resume_compatibility(store2, "user@example.com", "all_mail")
+    assert compatible is False
+    assert reason is not None
+    assert "older checkpoint that is not bound" in reason
+
+
+def test_checkpoint_metadata_singleton_and_migration(tmp_path: Path) -> None:
+    db_path = tmp_path / "migrated.sqlite3"
+
+    # Simulate older schema without id column
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE export_metadata (
+                account_email TEXT NOT NULL,
+                export_scope TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO export_metadata (account_email, export_scope, created_at, last_updated_at)
+            VALUES ('old@example.com', 'all_mail', '2026-08-20T10:00:00+00:00', '2026-08-20T10:00:00+00:00')
+            """
+        )
+
+    # Opening with CheckpointStore triggers migration
+    store = CheckpointStore(db_path)
+    meta = store.get_metadata()
+    assert meta is not None
+    assert meta.account_email == "old@example.com"
+    assert meta.created_at == "2026-08-20T10:00:00+00:00"
+
+    # Updating preserves singleton and created_at
+    store.set_metadata("updated@example.com", "inbox")
+    updated = store.get_metadata()
+    assert updated is not None
+    assert updated.account_email == "updated@example.com"
+    assert updated.export_scope == "inbox"
+    assert updated.created_at == "2026-08-20T10:00:00+00:00"
+
+    with sqlite3.connect(db_path) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM export_metadata").fetchone()[0]
+        assert count == 1
+
 
 
 

@@ -4,7 +4,7 @@ import threading
 from pathlib import Path
 
 from PySide6.QtCore import QThread, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QCloseEvent, QDesktopServices
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFileDialog,
@@ -39,6 +39,7 @@ class MainWindow(QMainWindow):
         self.cancel_event: threading.Event | None = None
         self._export_thread: QThread | None = None
         self._export_worker: ExportWorker | None = None
+        self._close_pending: bool = False
 
         self.setWindowTitle("Mailbox Rescue")
         self.resize(620, 480)
@@ -148,6 +149,16 @@ class MainWindow(QMainWindow):
 
         self._update_control_states()
 
+    def _resolved_destination(self) -> Path | None:
+        raw = self.destination_path.strip()
+        if not raw:
+            return None
+        try:
+            expanded = Path(raw).expanduser()
+            return expanded.resolve()
+        except (OSError, ValueError, RuntimeError):
+            return None
+
     def connect_google(self) -> None:
         self.connect_button.setEnabled(False)
         self.account_status_label.setText("Opening Google sign-in...")
@@ -160,9 +171,15 @@ class MainWindow(QMainWindow):
             client = GmailClient(credentials)
             profile = client.profile()
         except OAuthConfigurationError as exc:
+            self.gmail_client = None
+            self.mailbox_profile = None
+            self.connect_button.setText("Connect Google Account")
             QMessageBox.warning(self, "OAuth configuration required", str(exc))
             self.account_status_label.setText("Google OAuth configuration required")
         except Exception as exc:  # noqa: BLE001 - Outermost GUI boundary
+            self.gmail_client = None
+            self.mailbox_profile = None
+            self.connect_button.setText("Connect Google Account")
             QMessageBox.critical(self, "Could not connect", str(exc))
             self.account_status_label.setText("Connection failed")
         else:
@@ -217,15 +234,15 @@ class MainWindow(QMainWindow):
             )
             return
 
-        if not self.destination_path:
+        output_root = self._resolved_destination()
+        if output_root is None:
             QMessageBox.warning(
                 self,
                 "Destination Required",
-                "Please choose a destination folder for the export.",
+                "Please choose a valid destination folder for the export.",
             )
             return
 
-        output_root = Path(self.destination_path).expanduser().resolve()
         selected_scope = self.get_selected_scope()
 
         # Initialize checkpoint database and check resume compatibility
@@ -254,6 +271,24 @@ class MainWindow(QMainWindow):
                 reason or "This destination folder is incompatible with the current account or scope.",
             )
             return
+
+        # Explicitly confirm resume if prior work exists
+        has_prior_work = (
+            checkpoint_store.completed_count() > 0 or checkpoint_store.failed_count() > 0
+        )
+        if has_prior_work:
+            reply = QMessageBox.question(
+                self,
+                "Resume Existing Export",
+                (
+                    f"An existing export was found for {self.mailbox_profile.email_address}.\n\n"
+                    "Continue this export?"
+                ),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
 
         try:
             checkpoint_store.set_metadata(
@@ -301,10 +336,34 @@ class MainWindow(QMainWindow):
             self.progress_status_label.setText("Cancelling safely...")
 
     def open_export_folder(self) -> None:
-        if self.destination_path:
-            path = Path(self.destination_path).expanduser().resolve()
-            if path.exists():
-                QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        output_root = self._resolved_destination()
+        if output_root is not None:
+            try:
+                if output_root.exists():
+                    QDesktopServices.openUrl(QUrl.fromLocalFile(str(output_root)))
+            except OSError:
+                pass
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        is_running = self._export_thread is not None and self._export_thread.isRunning()
+        if not is_running:
+            event.accept()
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Export in Progress",
+            "An export is still running.\n\nCancel the export and close Mailbox Rescue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._close_pending = True
+            if self.cancel_event:
+                self.cancel_event.set()
+            self.cancel_button.setEnabled(False)
+            self.progress_status_label.setText("Cancelling safely...")
+        event.ignore()
 
     def _on_export_progress(self, progress: ExportProgress) -> None:
         match progress.phase:
@@ -358,6 +417,10 @@ class MainWindow(QMainWindow):
             self.progress_status_label.setText(
                 "Export cancelled safely. You can resume this folder later."
             )
+            # Ensure progress bar becomes determinate even if cancelled during scan
+            if self.progress_bar.maximum() == 0:
+                self.progress_bar.setRange(0, 1)
+                self.progress_bar.setValue(0)
         elif result.failed == 0:
             self.progress_status_label.setText("Export complete.")
             self.progress_bar.setRange(0, max(result.total_scanned, 1))
@@ -386,7 +449,10 @@ class MainWindow(QMainWindow):
     def _on_export_thread_finished(self) -> None:
         self._export_thread = None
         self._export_worker = None
-        self._update_control_states()
+        if self._close_pending:
+            self.close()
+        else:
+            self._update_control_states()
 
     def _set_exporting_state(self) -> None:
         self.connect_button.setEnabled(False)
@@ -413,8 +479,14 @@ class MainWindow(QMainWindow):
             return
 
         is_connected = self.gmail_client is not None
-        has_destination = bool(self.destination_path and self.destination_path.strip())
-        dest_exists = Path(self.destination_path).exists() if has_destination else False
+        resolved = self._resolved_destination()
+        has_destination = resolved is not None
+        dest_exists = False
+        if resolved is not None:
+            try:
+                dest_exists = resolved.exists()
+            except OSError:
+                dest_exists = False
 
         self.start_button.setEnabled(is_connected and has_destination)
         self.cancel_button.setEnabled(False)
