@@ -19,9 +19,17 @@ PROHIBITED_MAIL_AND_DATA_PATTERNS = [
     "*.eml",
     "*.eml.part",
     "*.mbox",
+    "*.mbox.part",
     "checksums.sha256",
+    "checksums.sha256.part",
     "export-report.html",
+    "export-report.html.part",
+    "account.json",
+    "account.json.part",
+    "labels.json",
+    "labels.json.part",
     "messages.jsonl",
+    "messages.jsonl.part",
 ]
 
 PROHIBITED_DEV_AND_CACHE_PATTERNS = [
