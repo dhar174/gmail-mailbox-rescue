@@ -74,9 +74,9 @@ Mailbox-Backup/
 ├── messages/
 │   ├── <gmail-message-id>.eml
 │   └── ...
-├── export.sqlite3
+├── metadata/
+│   └── checkpoint.sqlite3
 ├── mailbox.mbox          # later milestone
-├── metadata/             # later milestone
 └── export-report.html    # later milestone
 ```
 

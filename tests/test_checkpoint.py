@@ -336,5 +336,72 @@ def test_checkpoint_metadata_singleton_and_migration(tmp_path: Path) -> None:
         assert count == 1
 
 
+def test_legacy_metadata_migration_failure_preserves_original_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "rollback_migration.sqlite3"
+
+    # Create legacy unkeyed table with initial row
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE export_metadata (
+                account_email TEXT NOT NULL,
+                export_scope TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO export_metadata (account_email, export_scope, created_at, last_updated_at)
+            VALUES ('legacy_user@example.com', 'all_mail', '2026-08-01T00:00:00+00:00', '2026-08-01T00:00:00+00:00')
+            """
+        )
+
+    original_connect = sqlite3.connect
+
+    class FailingConnection:
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            self._conn = conn
+
+        def execute(self, sql: str, *args, **kwargs):
+            if "INSERT INTO export_metadata" in sql:
+                raise sqlite3.OperationalError("Simulated disk I/O failure during migration insert")
+            return self._conn.execute(sql, *args, **kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return self._conn.__exit__(*args)
+
+    monkeypatch.setattr(
+        CheckpointStore,
+        "_connect",
+        lambda self: FailingConnection(original_connect(self.database_path)),
+    )
+
+    with pytest.raises(sqlite3.OperationalError, match="Simulated disk I/O failure"):
+        CheckpointStore(db_path)
+
+    # Verify that the original legacy table export_metadata was restored and data was preserved
+    with sqlite3.connect(db_path) as conn:
+        columns = [
+            row[1]
+            for row in conn.execute("PRAGMA table_info(export_metadata)").fetchall()
+        ]
+        assert "id" not in columns
+        assert "account_email" in columns
+
+        row = conn.execute("SELECT account_email, export_scope, created_at FROM export_metadata").fetchone()
+        assert row is not None
+        assert row[0] == "legacy_user@example.com"
+        assert row[1] == "all_mail"
+        assert row[2] == "2026-08-01T00:00:00+00:00"
+
+
+
 
 

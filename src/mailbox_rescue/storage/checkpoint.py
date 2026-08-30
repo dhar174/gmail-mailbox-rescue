@@ -281,28 +281,34 @@ class CheckpointStore:
                     LIMIT 1
                     """
                 ).fetchone()
-                connection.execute("DROP TABLE export_metadata")
-                connection.execute(
-                    """
-                    CREATE TABLE export_metadata (
-                        id INTEGER PRIMARY KEY CHECK (id = 1),
-                        account_email TEXT NOT NULL,
-                        export_scope TEXT NOT NULL,
-                        created_at TEXT NOT NULL,
-                        last_updated_at TEXT NOT NULL
-                    )
-                    """
-                )
-                if row is not None:
+                connection.execute("ALTER TABLE export_metadata RENAME TO _legacy_export_metadata")
+                try:
                     connection.execute(
                         """
-                        INSERT INTO export_metadata (
-                            id, account_email, export_scope, created_at, last_updated_at
+                        CREATE TABLE export_metadata (
+                            id INTEGER PRIMARY KEY CHECK (id = 1),
+                            account_email TEXT NOT NULL,
+                            export_scope TEXT NOT NULL,
+                            created_at TEXT NOT NULL,
+                            last_updated_at TEXT NOT NULL
                         )
-                        VALUES (1, ?, ?, ?, ?)
-                        """,
-                        row,
+                        """
                     )
+                    if row is not None:
+                        connection.execute(
+                            """
+                            INSERT INTO export_metadata (
+                                id, account_email, export_scope, created_at, last_updated_at
+                            )
+                            VALUES (1, ?, ?, ?, ?)
+                            """,
+                            row,
+                        )
+                    connection.execute("DROP TABLE _legacy_export_metadata")
+                except Exception:
+                    connection.execute("DROP TABLE IF EXISTS export_metadata")
+                    connection.execute("ALTER TABLE _legacy_export_metadata RENAME TO export_metadata")
+                    raise
             else:
                 connection.execute(
                     """

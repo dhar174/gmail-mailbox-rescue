@@ -729,3 +729,54 @@ def test_full_ui_export_flow_and_resume(
     assert window.progress_status_label.text() == "Export complete."
     assert "Saved: 0" in window.progress_detail_label.text()
     assert "Already saved: 2" in window.progress_detail_label.text()
+
+
+def test_corrupt_checkpoint_displays_friendly_storage_error(
+    qapp: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dest = tmp_path / "corrupt_export"
+    metadata_dir = dest / "metadata"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    # Write garbage bytes to checkpoint file so sqlite3 fails to open/query it
+    (metadata_dir / "checkpoint.sqlite3").write_bytes(b"CORRUPTED_SQLITE_HEADER_GARBAGE")
+
+    window = _create_test_window(tmp_path)
+    window.gmail_client = MagicMock(spec=GmailClient)
+    window.mailbox_profile = MailboxProfile("user@example.com", 10, 2)
+    window.set_destination(str(dest))
+
+    critical_mock = MagicMock()
+    monkeypatch.setattr(QMessageBox, "critical", critical_mock)
+
+    window.start_export()
+
+    critical_mock.assert_called_once()
+    args, _ = critical_mock.call_args
+    assert "Storage Error" in args[1]
+    assert window._export_thread is None
+
+
+def test_close_event_when_export_finishes_while_dialog_open(
+    qapp: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    window = _create_test_window(tmp_path)
+    window.cancel_event = threading.Event()
+    mock_thread = MagicMock(spec=QThread)
+    mock_thread.isRunning.return_value = True
+    window._export_thread = mock_thread
+
+    def simulate_thread_finish_during_question(*args, **kwargs):
+        # Simulate thread finishing while the user was deciding in the dialog
+        mock_thread.isRunning.return_value = False
+        window._on_export_thread_finished()
+        return QMessageBox.StandardButton.Yes
+
+    monkeypatch.setattr(QMessageBox, "question", simulate_thread_finish_during_question)
+
+    event = QCloseEvent()
+    window.closeEvent(event)
+
+    # Because export thread was already finished when Yes was clicked, close succeeds immediately
+    assert event.isAccepted() is True
+    assert window._close_pending is False
+

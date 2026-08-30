@@ -251,20 +251,20 @@ class MainWindow(QMainWindow):
         try:
             metadata_dir.mkdir(parents=True, exist_ok=True)
             checkpoint_store = CheckpointStore(checkpoint_path)
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(
-                self,
-                "Storage Error",
-                f"Could not initialize export checkpoint database:\n{exc}",
-            )
-            return
-
-        try:
             compatible, reason = check_resume_compatibility(
                 checkpoint_store=checkpoint_store,
                 account_email=self.mailbox_profile.email_address,
                 export_scope=selected_scope.value,
             )
+            if not compatible:
+                QMessageBox.warning(
+                    self,
+                    "Resume Incompatible",
+                    reason
+                    or "This destination folder is incompatible with the current account or scope.",
+                )
+                return
+
             has_prior_work = (
                 checkpoint_store.completed_count() > 0
                 or checkpoint_store.failed_count() > 0
@@ -274,14 +274,6 @@ class MainWindow(QMainWindow):
                 self,
                 "Storage Error",
                 f"Could not inspect export checkpoint database:\n{exc}",
-            )
-            return
-
-        if not compatible:
-            QMessageBox.warning(
-                self,
-                "Resume Incompatible",
-                reason or "This destination folder is incompatible with the current account or scope.",
             )
             return
 
@@ -371,12 +363,15 @@ class MainWindow(QMainWindow):
             if self._export_thread is None or not self._export_thread.isRunning():
                 event.accept()
                 return
+
             self._close_pending = True
             if self.cancel_event:
                 self.cancel_event.set()
             self.cancel_button.setEnabled(False)
             self.progress_status_label.setText("Cancelling safely...")
-        event.ignore()
+            event.ignore()
+        else:
+            event.ignore()
 
     def _on_export_progress(self, progress: ExportProgress) -> None:
         match progress.phase:
