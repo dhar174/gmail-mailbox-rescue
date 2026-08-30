@@ -103,31 +103,32 @@ if (Test-Path $StartHereSrc) {
 }
 
 # 6. Handle optional sidecar OAuth client configuration
+$HygieneScript = Join-Path $RepoRoot "scripts\verify_release_hygiene.py"
 $AllowOAuthFlag = @()
 if ($OAuthClientConfig -and $OAuthClientConfig.Trim() -ne "") {
     $ResolvedOAuth = Resolve-Path $OAuthClientConfig -ErrorAction SilentlyContinue
     if (-not $ResolvedOAuth -or -not (Test-Path $ResolvedOAuth.Path -PathType Leaf)) {
-        Write-Error "Specified OAuth client config does not exist: $OAuthClientConfig"
+        Write-Error "Specified OAuth client config does not exist or is not a regular file: $OAuthClientConfig"
         exit 1
     }
 
-    # Strict safety check: reject tokens or database files passed as client config
-    $OAuthFileName = Split-Path -Leaf $ResolvedOAuth.Path
-    if ($OAuthFileName -match "token" -or $OAuthFileName -match "\.sqlite" -or $OAuthFileName -match "\.eml" -or $OAuthFileName -match "\.mbox") {
-        Write-Error "Security check rejected file '$OAuthFileName': User tokens and mail data cannot be packaged!"
+    # Strict structure and filename validation using Python hygiene validator
+    Write-Host "`nValidating OAuth client configuration: $($ResolvedOAuth.Path)..." -ForegroundColor Cyan
+    & python $HygieneScript --validate-oauth-client $ResolvedOAuth.Path
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "OAuth client configuration validation failed for: $($ResolvedOAuth.Path). Release packaging aborted."
         exit 1
     }
 
     $DestSecretPath = Join-Path $AppOutDir "client_secret.json"
     Copy-Item $ResolvedOAuth.Path -Destination $DestSecretPath -Force
-    Write-Host "`n[NOTICE] Staged OAuth client config beside executable: $DestSecretPath" -ForegroundColor Magenta
+    Write-Host "[NOTICE] Staged validated OAuth client config beside executable: $DestSecretPath" -ForegroundColor Magenta
     Write-Host "[NOTICE] Never distribute employee tokens or commit this file to git." -ForegroundColor Magenta
     $AllowOAuthFlag = @("--allow-oauth-client")
 }
 
 # 7. Verify release hygiene on application directory
 Write-Host "`nVerifying release hygiene on staged bundle..." -ForegroundColor Cyan
-$HygieneScript = Join-Path $RepoRoot "scripts\verify_release_hygiene.py"
 & python $HygieneScript $AppOutDir @AllowOAuthFlag
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Release hygiene check failed for directory: $AppOutDir"

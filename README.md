@@ -117,4 +117,4 @@ The build script will:
 4. Compress the folder into `dist\releases\Mailbox-Rescue-v0.1.0-win64.zip`.
 5. Run release hygiene checks on the generated ZIP.
 
-See [RELEASE_CHECKLIST.md](file:///d:/projects/gmail-mailbox-rescue/RELEASE_CHECKLIST.md) for full pre-release smoke testing steps.
+See [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) for full pre-release smoke testing steps.
