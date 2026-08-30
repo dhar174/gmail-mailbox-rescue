@@ -55,7 +55,11 @@ def verify_completed_message(
                 f"size_mismatch: expected {completed.size_bytes} bytes, found {stat_result.st_size} bytes",
             )
 
-        actual_digest = hashlib.sha256(resolved.read_bytes()).hexdigest()
+        hasher = hashlib.sha256()
+        with resolved.open("rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                hasher.update(chunk)
+        actual_digest = hasher.hexdigest()
         if actual_digest.lower() != completed.sha256.lower():
             return (
                 False,

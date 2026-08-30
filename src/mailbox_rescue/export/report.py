@@ -23,8 +23,14 @@ def generate_html_report(
 
     generation_time = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
     account_email = metadata.account_email if metadata else "Unknown"
-    export_scope_display = "All Mail" if (metadata and metadata.export_scope == "all_mail") else "Inbox only"
-
+    if metadata is None:
+        export_scope_display = "Unknown"
+    elif metadata.export_scope == "all_mail":
+        export_scope_display = "All Mail"
+    elif metadata.export_scope == "inbox":
+        export_scope_display = "Inbox only"
+    else:
+        export_scope_display = metadata.export_scope
     # Determine archive verification and overall status
     if not result.archive_verified or len(result.verification_failures) > 0:
         status_text = "VERIFICATION FAILED"

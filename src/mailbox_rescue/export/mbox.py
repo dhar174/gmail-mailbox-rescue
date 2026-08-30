@@ -14,7 +14,7 @@ def write_mbox(
     completed_messages: list[CompletedMessage],
 ) -> Path:
     """
-    Regenerate mailbox.mbox from verified canonical EML files.
+    Regenerate mailbox.mbox from canonical EML files present on disk.
     Writes atomically via temporary sibling .part file.
     """
     mbox_file = output_root / "mailbox.mbox"

@@ -42,6 +42,9 @@ def write_manifest(
         # Standard sha256sum format: "<hash>  <relative_path>\n"
         # Ensure forward slashes for cross-platform portability
         rel_posix = Path(msg.relative_path).as_posix()
+        # Refuse traversal/control-character paths so the manifest cannot reference files outside output_root
+        if "\n" in rel_posix or "\r" in rel_posix or resolve_safe_relative_path(output_root, rel_posix) is None:
+            continue
         lines.append(f"{msg.sha256.lower()}  {rel_posix}\n")
 
     part_file.write_text("".join(lines), encoding="utf-8")
@@ -117,7 +120,11 @@ def verify_manifest(
             continue
 
         try:
-            actual_digest = hashlib.sha256(resolved.read_bytes()).hexdigest().lower()
+            hasher = hashlib.sha256()
+            with resolved.open("rb") as f:
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    hasher.update(chunk)
+            actual_digest = hasher.hexdigest().lower()
             if actual_digest != expected_hash:
                 failures.append(
                     ManifestEntryFailure(
