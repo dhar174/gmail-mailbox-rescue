@@ -69,6 +69,13 @@ ALLOWED_TOKEN_URIS = (
     "https://accounts.google.com/o/oauth2/token",
 )
 
+ALLOWED_LOOPBACK_REDIRECT_PREFIXES = (
+    "http://localhost",
+    "http://127.0.0.1",
+    "http://[::1]",
+    "urn:ietf:wg:oauth:2.0:oob",
+)
+
 
 def validate_oauth_client_content(content_bytes: bytes, source_name: str) -> list[str]:
     """Validate Google OAuth client configuration content for desktop/installed app usage.
@@ -138,13 +145,7 @@ def validate_oauth_client_content(content_bytes: bytes, source_name: str) -> lis
                     f"Invalid 'redirect_uris' in '{source_name}': All items must be non-empty strings."
                 )
             elif not any(
-                isinstance(u, str)
-                and (
-                    u.startswith("http://localhost")
-                    or u.startswith("http://127.0.0.1")
-                    or u.startswith("http://[::1]")
-                    or u.startswith("urn:ietf:wg:oauth:2.0:oob")
-                )
+                isinstance(u, str) and u.startswith(ALLOWED_LOOPBACK_REDIRECT_PREFIXES)
                 for u in val
             ):
                 errors.append(
