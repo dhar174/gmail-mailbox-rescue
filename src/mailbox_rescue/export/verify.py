@@ -10,9 +10,25 @@ from mailbox_rescue.storage.checkpoint import CheckpointStore, CompletedMessage
 
 @dataclass(frozen=True, slots=True)
 class VerificationResult:
-    verified_count: int
+    verified_messages: list[CompletedMessage] = field(default_factory=list)
     failures: list[VerificationFailure] = field(default_factory=list)
-    is_valid: bool = True
+
+    @property
+    def verified_count(self) -> int:
+        return len(self.verified_messages)
+
+    @property
+    def is_valid(self) -> bool:
+        return not self.failures
+
+
+def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    """Calculate SHA-256 hex digest of a file by streaming chunks."""
+    hasher = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(chunk_size), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
 
 
 def resolve_safe_relative_path(output_root: Path, relative_path: str) -> Path | None:
@@ -55,11 +71,7 @@ def verify_completed_message(
                 f"size_mismatch: expected {completed.size_bytes} bytes, found {stat_result.st_size} bytes",
             )
 
-        hasher = hashlib.sha256()
-        with resolved.open("rb") as f:
-            for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                hasher.update(chunk)
-        actual_digest = hasher.hexdigest()
+        actual_digest = sha256_file(resolved)
         if actual_digest.lower() != completed.sha256.lower():
             return (
                 False,
@@ -79,13 +91,13 @@ def verify_archive(
     Perform a complete verification pass across all completed messages in checkpoint_store.
     """
     completed_messages = checkpoint_store.list_completed()
+    verified_messages: list[CompletedMessage] = []
     failures: list[VerificationFailure] = []
-    verified_count = 0
 
     for completed in completed_messages:
         valid, reason = verify_completed_message(output_root, completed)
         if valid:
-            verified_count += 1
+            verified_messages.append(completed)
         else:
             failures.append(
                 VerificationFailure(
@@ -96,7 +108,6 @@ def verify_archive(
             )
 
     return VerificationResult(
-        verified_count=verified_count,
+        verified_messages=verified_messages,
         failures=failures,
-        is_valid=(len(failures) == 0),
     )

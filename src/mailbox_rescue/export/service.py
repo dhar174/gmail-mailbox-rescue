@@ -285,16 +285,14 @@ class ExportService:
                         continue
 
                     # Persist backfilled metadata
-                    meta_record = self._build_message_metadata(export_msg, labels_map)
-                    if meta_record.message_id != msg_id:
-                        meta_record = MessageMetadata(
-                            message_id=msg_id,
-                            thread_id=meta_record.thread_id,
-                            labels_json=meta_record.labels_json,
-                            captured_at=meta_record.captured_at,
+                    if export_msg.message_id and export_msg.message_id != msg_id:
+                        metadata_warnings.append(
+                            f"Inconsistent Gmail API message ID during metadata backfill: requested '{msg_id}', received '{export_msg.message_id}'"
                         )
+                    meta_record = self._build_message_metadata(msg_id, export_msg, labels_map)
                     try:
                         self._checkpoint_store.set_message_metadata(meta_record)
+                    except sqlite3.Error as db_exc:
                         raise FatalStorageError(
                             f"Fatal database error backfilling metadata for '{msg_id}': {db_exc}"
                         ) from db_exc
@@ -406,7 +404,11 @@ class ExportService:
 
             # Checkpoint completed message + message metadata atomically
             relative_path = written.path.relative_to(output_root).as_posix()
-            meta_record = self._build_message_metadata(export_msg, labels_map)
+            if export_msg.message_id and export_msg.message_id != msg_id:
+                metadata_warnings.append(
+                    f"Inconsistent Gmail API message ID during export: requested '{msg_id}', received '{export_msg.message_id}'"
+                )
+            meta_record = self._build_message_metadata(msg_id, export_msg, labels_map)
             try:
                 self._checkpoint_store.mark_completed(
                     message=CompletedMessage(
@@ -439,12 +441,18 @@ class ExportService:
 
         # Phase 3: Archive Verification and Derived Artifacts Generation
         verification_result = verify_archive(output_root, self._checkpoint_store)
-        completed_messages = self._checkpoint_store.list_completed()
+        all_completed = self._checkpoint_store.list_completed()
+        verified_messages = verification_result.verified_messages
 
         try:
-            write_portable_metadata(output_root, self._checkpoint_store, labels_list)
-            write_manifest(output_root, completed_messages)
-            write_mbox(output_root, completed_messages)
+            write_portable_metadata(
+                output_root,
+                self._checkpoint_store,
+                labels_list,
+                completed_messages=verified_messages,
+            )
+            write_manifest(output_root, verified_messages)
+            write_mbox(output_root, verified_messages)
             export_metadata = self._checkpoint_store.get_metadata()
 
             intermediate_result = ExportResult(
@@ -464,7 +472,7 @@ class ExportService:
                 output_root=output_root,
                 result=intermediate_result,
                 metadata=export_metadata,
-                total_canonical_emls=len(completed_messages),
+                total_canonical_emls=len(all_completed),
             )
         except OSError as exc:
             raise FatalStorageError(f"Fatal error generating archive artifacts: {exc}") from exc
@@ -497,6 +505,7 @@ class ExportService:
 
     def _build_message_metadata(
         self,
+        message_id: str,
         export_msg: GmailExportMessage,
         labels_map: dict[str, GmailLabel],
     ) -> MessageMetadata:
@@ -508,7 +517,7 @@ class ExportService:
                 labels_data.append({"id": lid})
 
         return MessageMetadata(
-            message_id=export_msg.message_id,
+            message_id=message_id,
             thread_id=export_msg.thread_id,
             labels_json=json.dumps(labels_data, ensure_ascii=False),
             captured_at=datetime.now(UTC).isoformat(),

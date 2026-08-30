@@ -126,3 +126,36 @@ def test_write_portable_metadata_bundle(tmp_path: Path) -> None:
     assert (root / "metadata" / "account.json").is_file()
     assert (root / "metadata" / "labels.json").is_file()
     assert (root / "metadata" / "messages.jsonl").is_file()
+
+
+def test_write_account_metadata_without_checkpoint_metadata_is_truthful(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    store = CheckpointStore(root / "export.sqlite3")
+
+    target = write_account_metadata(root, store)
+    data = json.loads(target.read_text(encoding="utf-8"))
+
+    assert data["account_email"] is None
+    assert data["export_scope"] is None
+    assert "archive_created_at" in data
+    assert "metadata_generated_at" in data
+
+
+def test_write_messages_metadata_respects_verified_messages_subset(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    store = CheckpointStore(root / "export.sqlite3")
+
+    msg_a = CompletedMessage(message_id="msg_a", relative_path="messages/msg_a.eml", sha256="a" * 64, size_bytes=100)
+    msg_b = CompletedMessage(message_id="msg_b", relative_path="messages/msg_b.eml", sha256="b" * 64, size_bytes=200)
+
+    store.mark_completed(msg_a, MessageMetadata(message_id="msg_a", thread_id="t_a", labels_json="[]", captured_at="2026-08-28T00:00:00Z"))
+    store.mark_completed(msg_b, MessageMetadata(message_id="msg_b", thread_id="t_b", labels_json="[]", captured_at="2026-08-28T00:00:00Z"))
+
+    # Pass only msg_a as the verified subset
+    target = write_messages_metadata(root, store, completed_messages=[msg_a])
+    lines = [line.strip() for line in target.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["gmail_message_id"] == "msg_a"
+

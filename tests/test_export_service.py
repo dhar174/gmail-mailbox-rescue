@@ -1,6 +1,6 @@
-from __future__ import annotations
-
+import hashlib
 import json
+import mailbox
 import sqlite3
 import threading
 from collections.abc import Iterator
@@ -21,10 +21,13 @@ from mailbox_rescue.export.models import (
     ScanError,
 )
 from mailbox_rescue.export.service import ExportService
-from mailbox_rescue.storage.checkpoint import CheckpointStore, CompletedMessage, FailedMessage
-
-
 from mailbox_rescue.gmail.client import GmailExportMessage, GmailLabel
+from mailbox_rescue.storage.checkpoint import (
+    CheckpointStore,
+    CompletedMessage,
+    FailedMessage,
+    MessageMetadata,
+)
 
 
 def _make_http_error(status: int, reason: str = "", error_dict: dict | None = None) -> HttpError:
@@ -102,6 +105,7 @@ class FakeGmailClient:
                 raise effect
             if callable(effect):
                 return effect()
+            return effect
         if message_id not in self.message_map:
             raise _make_http_error(404, reason="Not Found")
         return GmailExportMessage(
@@ -223,9 +227,6 @@ def test_inbox_scope_parameters(tmp_path: Path) -> None:
 
 
 def test_resume_skips_already_completed_messages(tmp_path: Path) -> None:
-    import hashlib
-    from mailbox_rescue.storage.checkpoint import MessageMetadata
-
     store = CheckpointStore(tmp_path / "checkpoint.sqlite3")
     raw_1 = b"raw 1"
     h1 = hashlib.sha256(raw_1).hexdigest()
@@ -626,9 +627,6 @@ def test_fetch_retry_callback_cancellation_skips_sleep(tmp_path: Path) -> None:
 
 
 def test_resume_repairs_missing_eml(tmp_path: Path) -> None:
-    import hashlib
-    from mailbox_rescue.storage.checkpoint import MessageMetadata
-
     store = CheckpointStore(tmp_path / "checkpoint.sqlite3")
     raw_1 = b"raw msg 1 payload"
     h1 = hashlib.sha256(raw_1).hexdigest()
@@ -665,9 +663,6 @@ def test_resume_repairs_missing_eml(tmp_path: Path) -> None:
 
 
 def test_resume_repairs_corrupted_hash_eml(tmp_path: Path) -> None:
-    import hashlib
-    from mailbox_rescue.storage.checkpoint import MessageMetadata
-
     store = CheckpointStore(tmp_path / "checkpoint.sqlite3")
     raw_1 = b"raw msg 1 authentic"
     h1 = hashlib.sha256(raw_1).hexdigest()
@@ -706,9 +701,6 @@ def test_resume_repairs_corrupted_hash_eml(tmp_path: Path) -> None:
 
 
 def test_resume_repairs_wrong_size_eml(tmp_path: Path) -> None:
-    import hashlib
-    from mailbox_rescue.storage.checkpoint import MessageMetadata
-
     store = CheckpointStore(tmp_path / "checkpoint.sqlite3")
     raw_1 = b"raw msg 1 authentic"
     h1 = hashlib.sha256(raw_1).hexdigest()
@@ -746,8 +738,6 @@ def test_resume_repairs_wrong_size_eml(tmp_path: Path) -> None:
 
 
 def test_resume_rejects_unsafe_checkpoint_path_and_repairs_safely(tmp_path: Path) -> None:
-    import hashlib
-
     archive_dir = tmp_path / "archive"
     archive_dir.mkdir()
     store = CheckpointStore(archive_dir / "checkpoint.sqlite3")
@@ -787,8 +777,6 @@ def test_resume_rejects_unsafe_checkpoint_path_and_repairs_safely(tmp_path: Path
 
 
 def test_pre_issue5_metadata_backfill(tmp_path: Path) -> None:
-    import hashlib
-
     store = CheckpointStore(tmp_path / "checkpoint.sqlite3")
     raw_1 = b"existing valid raw message"
     h1 = hashlib.sha256(raw_1).hexdigest()
@@ -829,6 +817,199 @@ def test_pre_issue5_metadata_backfill(tmp_path: Path) -> None:
     assert meta is not None
     assert meta.thread_id == "th_msg_1"
     assert "INBOX" in meta.labels_json
+
+
+def test_backfill_database_error_raises_fatal_storage_error(tmp_path: Path) -> None:
+    store = CheckpointStore(tmp_path / "checkpoint.sqlite3")
+    raw_1 = b"existing valid raw message"
+    h1 = hashlib.sha256(raw_1).hexdigest()
+
+    messages_dir = tmp_path / "messages"
+    messages_dir.mkdir(parents=True)
+    (messages_dir / "msg_1.eml").write_bytes(raw_1)
+
+    store.mark_completed(
+        CompletedMessage(
+            message_id="msg_1",
+            relative_path="messages/msg_1.eml",
+            sha256=h1,
+            size_bytes=len(raw_1),
+        )
+    )
+
+    fake_client = FakeGmailClient(message_map={"msg_1": raw_1})
+    policy, _ = _make_test_policy()
+    service = ExportService(fake_client, store, policy)  # type: ignore[arg-type]
+
+    with (
+        patch.object(store, "set_message_metadata", side_effect=sqlite3.DatabaseError("DB write failed")),
+        pytest.raises(FatalStorageError, match="Fatal database error backfilling metadata for 'msg_1'"),
+    ):
+        service.run(output_root=tmp_path)
+
+
+def test_new_message_canonicalizes_metadata_to_scanned_id_on_id_mismatch(tmp_path: Path) -> None:
+    store = CheckpointStore(tmp_path / "checkpoint.sqlite3")
+    raw_1 = b"test payload"
+
+    fake_client = FakeGmailClient(message_ids=["msg_scanned"])
+    fake_client.get_export_side_effects["msg_scanned"] = [
+        GmailExportMessage(
+            message_id="msg_returned_different",
+            thread_id="th_123",
+            label_ids=("INBOX",),
+            raw_bytes=raw_1,
+        )
+    ]
+
+    policy, _ = _make_test_policy()
+    service = ExportService(fake_client, store, policy)  # type: ignore[arg-type]
+
+    result = service.run(output_root=tmp_path)
+
+    assert result.completed_this_run == 1
+    assert store.is_completed("msg_scanned") is True
+    assert store.is_completed("msg_returned_different") is False
+
+    meta_scanned = store.get_message_metadata("msg_scanned")
+    assert meta_scanned is not None
+    assert meta_scanned.message_id == "msg_scanned"
+    assert meta_scanned.thread_id == "th_123"
+
+    meta_diff = store.get_message_metadata("msg_returned_different")
+    assert meta_diff is None
+
+    assert any("Inconsistent Gmail API message ID" in w for w in result.metadata_warnings)
+
+
+def test_backfill_canonicalizes_metadata_to_scanned_id_on_id_mismatch(tmp_path: Path) -> None:
+    store = CheckpointStore(tmp_path / "checkpoint.sqlite3")
+    raw_1 = b"legacy raw payload"
+    h1 = hashlib.sha256(raw_1).hexdigest()
+
+    messages_dir = tmp_path / "messages"
+    messages_dir.mkdir(parents=True)
+    (messages_dir / "msg_legacy.eml").write_bytes(raw_1)
+
+    store.mark_completed(
+        CompletedMessage(
+            message_id="msg_legacy",
+            relative_path="messages/msg_legacy.eml",
+            sha256=h1,
+            size_bytes=len(raw_1),
+        )
+    )
+
+    fake_client = FakeGmailClient(message_ids=["msg_legacy"])
+    fake_client.get_export_side_effects["msg_legacy"] = [
+        GmailExportMessage(
+            message_id="msg_diff",
+            thread_id="th_legacy",
+            label_ids=("INBOX",),
+            raw_bytes=raw_1,
+        )
+    ]
+
+    policy, _ = _make_test_policy()
+    service = ExportService(fake_client, store, policy)  # type: ignore[arg-type]
+
+    result = service.run(output_root=tmp_path)
+
+    assert result.completed_this_run == 0
+    assert result.skipped_completed == 1
+
+    meta_legacy = store.get_message_metadata("msg_legacy")
+    assert meta_legacy is not None
+    assert meta_legacy.message_id == "msg_legacy"
+    assert meta_legacy.thread_id == "th_legacy"
+
+    assert store.get_message_metadata("msg_diff") is None
+    assert any("Inconsistent Gmail API message ID" in w for w in result.metadata_warnings)
+
+
+def test_finalization_builds_derived_artifacts_from_only_verified_messages(tmp_path: Path) -> None:
+    store = CheckpointStore(tmp_path / "export.sqlite3")
+    raw_good = b"From: a@example.com\r\nSubject: Good Message\r\n\r\nGood\r\n"
+    raw_bad = b"From: b@example.com\r\nSubject: Bad Message\r\n\r\nBad\r\n"
+
+    h_good = hashlib.sha256(raw_good).hexdigest()
+    h_bad = hashlib.sha256(raw_bad).hexdigest()
+
+    messages_dir = tmp_path / "messages"
+    messages_dir.mkdir(parents=True)
+    (messages_dir / "msg_good.eml").write_bytes(raw_good)
+    # Write corrupted bytes to msg_bad.eml on disk
+    (messages_dir / "msg_bad.eml").write_bytes(b"corrupted bytes on disk")
+
+    store.mark_completed(
+        CompletedMessage(
+            message_id="msg_good",
+            relative_path="messages/msg_good.eml",
+            sha256=h_good,
+            size_bytes=len(raw_good),
+        ),
+        MessageMetadata(
+            message_id="msg_good",
+            thread_id="th_good",
+            labels_json='[{"id": "INBOX", "name": "INBOX"}]',
+            captured_at="2026-08-28T00:00:00Z",
+        ),
+    )
+    store.mark_completed(
+        CompletedMessage(
+            message_id="msg_bad",
+            relative_path="messages/msg_bad.eml",
+            sha256=h_bad,
+            size_bytes=len(raw_bad),
+        ),
+        MessageMetadata(
+            message_id="msg_bad",
+            thread_id="th_bad",
+            labels_json='[{"id": "INBOX", "name": "INBOX"}]',
+            captured_at="2026-08-28T00:00:00Z",
+        ),
+    )
+
+    fake_client = FakeGmailClient(message_ids=["msg_good", "msg_bad"])
+    # Make msg_bad fail to refetch so it stays corrupted in the checkpoint
+    fake_client.get_export_side_effects["msg_bad"] = [_make_http_error(404, reason="Not Found")]
+
+    policy, _ = _make_test_policy()
+    service = ExportService(fake_client, store, policy)  # type: ignore[arg-type]
+
+    result = service.run(output_root=tmp_path)
+
+    # Check verification result
+    assert result.archive_verified is False
+    assert result.verified_files == 1
+    assert len(result.verification_failures) == 1
+    assert result.verification_failures[0].message_id == "msg_bad"
+
+    # 1. Manifest includes msg_good only
+    manifest_content = (tmp_path / "checksums.sha256").read_text(encoding="utf-8")
+    assert "messages/msg_good.eml" in manifest_content
+    assert "messages/msg_bad.eml" not in manifest_content
+
+    # 2. MBOX includes msg_good only
+    mb = mailbox.mbox(str(tmp_path / "mailbox.mbox"))
+    try:
+        assert len(mb) == 1
+        assert mb[0]["subject"] == "Good Message"
+    finally:
+        mb.close()
+
+    # 3. messages.jsonl includes msg_good only
+    jsonl_lines = [
+        line.strip() for line in (tmp_path / "metadata" / "messages.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(jsonl_lines) == 1
+    assert json.loads(jsonl_lines[0])["gmail_message_id"] == "msg_good"
+
+    # 4. Report retains VERIFICATION FAILED and lists msg_bad failure
+    report_html = (tmp_path / "export-report.html").read_text(encoding="utf-8")
+    assert "VERIFICATION FAILED" in report_html
+    assert "msg_bad" in report_html
 
 
 def test_export_service_generates_all_portable_archive_artifacts(tmp_path: Path) -> None:

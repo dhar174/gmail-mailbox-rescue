@@ -41,7 +41,7 @@ def write_mbox(
                 raw_bytes = resolved.read_bytes()
                 try:
                     msg = email.message_from_bytes(raw_bytes, policy=email.policy.default)
-                except Exception:
+                except (email.errors.MessageError, ValueError, LookupError):
                     msg = email.message_from_bytes(raw_bytes, policy=email.policy.compat32)
                 mbox.add(msg)
             mbox.flush()

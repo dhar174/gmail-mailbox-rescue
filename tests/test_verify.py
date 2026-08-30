@@ -163,6 +163,8 @@ def test_verify_archive_full_pass(tmp_path: Path) -> None:
     tampered_result = verify_archive(root, store)
     assert tampered_result.is_valid is False
     assert tampered_result.verified_count == 1
+    assert len(tampered_result.verified_messages) == 1
+    assert tampered_result.verified_messages[0].message_id == "m1"
     assert len(tampered_result.failures) == 1
     assert tampered_result.failures[0].message_id == "m2"
     assert "sha256_mismatch" in tampered_result.failures[0].reason

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from mailbox_rescue.export.verify import resolve_safe_relative_path
+from mailbox_rescue.export.verify import resolve_safe_relative_path, sha256_file
 from mailbox_rescue.storage.checkpoint import CompletedMessage
 
 
@@ -31,6 +30,7 @@ def write_manifest(
     """
     Generate checksums.sha256 from verified completed messages in deterministic order.
     Writes atomically via temporary sibling .part file.
+    Raises ValueError if any completed message contains an unsafe path.
     """
     manifest_file = output_root / "checksums.sha256"
     part_file = output_root / "checksums.sha256.part"
@@ -42,9 +42,9 @@ def write_manifest(
         # Standard sha256sum format: "<hash>  <relative_path>\n"
         # Ensure forward slashes for cross-platform portability
         rel_posix = Path(msg.relative_path).as_posix()
-        # Refuse traversal/control-character paths so the manifest cannot reference files outside output_root
+        # Refuse traversal/control-character paths with explicit failure
         if "\n" in rel_posix or "\r" in rel_posix or resolve_safe_relative_path(output_root, rel_posix) is None:
-            continue
+            raise ValueError(f"Unsafe relative path '{msg.relative_path}' cannot be written to manifest")
         lines.append(f"{msg.sha256.lower()}  {rel_posix}\n")
 
     part_file.write_text("".join(lines), encoding="utf-8")
@@ -120,11 +120,7 @@ def verify_manifest(
             continue
 
         try:
-            hasher = hashlib.sha256()
-            with resolved.open("rb") as f:
-                for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                    hasher.update(chunk)
-            actual_digest = hasher.hexdigest().lower()
+            actual_digest = sha256_file(resolved).lower()
             if actual_digest != expected_hash:
                 failures.append(
                     ManifestEntryFailure(

@@ -1,6 +1,8 @@
 import hashlib
 from pathlib import Path
 
+import pytest
+
 from mailbox_rescue.export.manifest import verify_manifest, write_manifest
 from mailbox_rescue.storage.checkpoint import CompletedMessage
 
@@ -93,3 +95,25 @@ def test_verify_manifest_integrity_and_tamper_detection(tmp_path: Path) -> None:
     no_manifest_res = verify_manifest(root)
     assert no_manifest_res.is_valid is False
     assert no_manifest_res.failures[0].reason == "manifest_file_missing"
+
+
+def test_write_manifest_rejects_unsafe_paths(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+
+    unsafe_cases = [
+        "../outside.eml",
+        "../../secret.txt",
+        "messages/bad\nname.eml",
+        "messages/bad\rname.eml",
+    ]
+
+    for bad_path in unsafe_cases:
+        msg = CompletedMessage(
+            message_id="bad_msg",
+            relative_path=bad_path,
+            sha256="0" * 64,
+            size_bytes=100,
+        )
+        with pytest.raises(ValueError, match="Unsafe relative path"):
+            write_manifest(root, [msg])
