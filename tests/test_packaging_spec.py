@@ -3,7 +3,6 @@ from __future__ import annotations
 import runpy
 from pathlib import Path
 
-
 SPEC_PATH = Path(__file__).resolve().parent.parent / "packaging" / "mailbox-rescue.spec"
 
 
