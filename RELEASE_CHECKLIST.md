@@ -9,12 +9,13 @@ This checklist defines the validation procedure and release audit record for Win
 | Property | Value / Record |
 | :--- | :--- |
 | **Application Version** | `0.1.0` |
-| **Build Commit SHA** | `89dbfa417ffdf5e7c62c2de9144eaa0ae3509e35` |
+| **Build Commit SHA** | `05e35c7caea9d5a92a0b5c77ff032182f3235722` |
 | **Windows Build Environment** | Windows 11 (Build 26340, AMD64) |
 | **Python Version** | Python 3.12.2 (64-bit, MSC v.1937) |
 | **PyInstaller Version** | PyInstaller 6.22.2 |
-| **Build Command** | `powershell -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1 -Clean` |
-| **Target Artifact** | `dist\releases\Mailbox-Rescue-v0.1.0-win64.zip` (71.17 MB) |
+| **Build Command** | `.\scripts\build-windows.ps1 -Clean -OAuthClientConfig <external Desktop OAuth JSON>` |
+| **Target Artifact** | `dist\releases\Mailbox-Rescue-v0.1.0-win64.zip` (77,220,379 bytes / 73.64 MiB) |
+| **Live Smoke Test Date** | 2026-09-01 |
 
 ---
 
@@ -55,7 +56,7 @@ Perform these steps on a clean Windows machine, Windows Sandbox, or an isolated 
 4. **Verify**:
    - [x] Sidecar configuration discovery beside executable confirmed.
    - [x] Local HTTP loopback listener (`127.0.0.1`) and OAuth flow URL generated correctly.
-   - [ ] Saved token written to `%LOCALAPPDATA%\Mailbox Rescue\Mailbox Rescue\google_token.json` (pending Google Cloud Console Desktop App Client ID in Issue #7).
+   - [x] Saved token written to `%LOCALAPPDATA%\Mailbox Rescue\Mailbox Rescue\google_token.json` and confirmed outside the application, release ZIP, and export destination.
 
 ### Step 4: Small Export & Archive Generation
 1. Select **Inbox only** (or small test folder).
@@ -85,9 +86,9 @@ Perform these steps on a clean Windows machine, Windows Sandbox, or an isolated 
 | :--- | :--- | :--- |
 | Clean GUI Launch | PASS | Tested packaged `Mailbox Rescue.exe` from extracted release ZIP in path with spaces; launched windowed without console or missing DLLs |
 | Missing OAuth UX | PASS | Informative guidance displayed instructing user where to place configuration |
-| Sidecar OAuth Connect | BLOCKED BY OAUTH CLIENT CONFIGURATION | The packaged app successfully discovered the sidecar, started its loopback listener, and reached Google OAuth. Google rejected the flow with redirect_uri_mismatch because the available test credential is a Web-type OAuth client. A Desktop App OAuth client is required for the final live sign-in test. Production organization approval remains tracked in Issue #7. |
-| Token AppData Isolation | PENDING LIVE OAUTH VALIDATION | Storage path and isolation are covered by automated tests; actual packaged token creation remains pending successful Desktop OAuth consent. |
-| Export & Verification | PASS | Validated complete export pipeline on path with spaces; all artifacts present and verified with SHA-256 |
-| Close & Resume Fidelity | PASS | Validated checkpoint resumption on path with spaces; skipped completed messages with 0 duplicates |
+| Sidecar OAuth Connect | PASS | Validated the configured packaged app with a Google Desktop OAuth client, loopback consent flow, and successful live connection using a development test user. Nectar production approval remains tracked separately in Issue #7. |
+| Token AppData Isolation | PASS | Live packaged authorization created the AppData token outside the application directory, release ZIP, and export destination; token contents were not inspected. |
+| Export & Verification | PASS | Real Inbox-only export completed on a path with spaces: 9,133 EML files, 9,133 checkpoint completions, 0 failures, all required portable artifacts present, 9,133/9,133 manifest hashes verified, and 0 remaining `.part` files. |
+| Close & Resume Fidelity | PASS | Normal close and packaged relaunch succeeded; saved authorization was reusable without a new consent flow. Resume recognized the prior checkpoint, skipped all 9,133 completed messages, downloaded 0 duplicates, retained 9,133 EML and MBOX messages, and passed verification again. The canonical EML manifest remained byte-stable; regenerated MBOX envelope timestamps are non-canonical and may change the MBOX file hash without changing message count or content. |
 | Paths With Spaces | PASS | Validated extraction and execution in directories with spaces |
-| Overall Release Status | PENDING LIVE DESKTOP OAUTH VALIDATION | Packaging, build automation, export/resume engineering validation, and release hygiene PASS; final packaged Google Desktop OAuth consent and live token creation remain pending. |
+| Overall Release Status | PASS | Reproducible packaging, release hygiene, packaged Desktop OAuth, AppData token isolation, real Inbox export, close/reopen, saved authorization, resume, and post-resume verification all passed. |
