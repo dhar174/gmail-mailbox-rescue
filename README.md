@@ -8,66 +8,33 @@ The core promise is intentionally boring and important:
 
 Mailbox Rescue does not need a hosted backend and is designed so OAuth tokens and exported email stay on the user's own machine.
 
-## Project status
+---
 
-Early MVP development. See [Issue #1](https://github.com/dhar174/gmail-mailbox-rescue/issues/1) for the MVP roadmap.
+## For Coworkers & End Users
 
-The desktop export workflow is now available:
+No Python or command-line tools are required to use Mailbox Rescue.
 
-1. **Connect Google Account**: Authenticate via Google OAuth sign-in. The connected account summary is displayed and retained for the session.
-2. **Choose export scope**: Select **All Mail** (default, excludes Spam and Trash) or **Inbox only**.
-3. **Choose destination folder**: Select a local folder to store exported messages.
-4. **Start Export**: The exporter runs safely in the background, writing individual `.eml` files and tracking progress in a SQLite checkpoint database.
-5. **Cancel & resume**: Cancel at any time without losing completed progress; resume anytime by selecting the same folder with the same account and scope.
+### 1. Quick Start
+1. **Download & Extract**: Download `Mailbox-Rescue-v0.1.0-win64.zip` and extract it to any convenient folder (e.g. Desktop or Downloads).
+2. **Verify Configuration**: Ensure the provided `client_secret.json` configuration file is placed directly beside `Mailbox Rescue.exe` in the extracted folder.
+3. **Launch the App**: Double-click `Mailbox Rescue.exe`.
+   > *Note on Windows SmartScreen*: Since this MVP build is currently unsigned, Windows may display a "Windows protected your PC" notification. Click **More info** and then **Run anyway**.
+4. **Connect Google Account**: Click **Connect Google Account**. Your default web browser will open to Google's sign-in page. Log in with your work account and grant read-only access.
+5. **Choose Scope & Folder**:
+   - Select **All Mail** (recommended) or **Inbox only**.
+   - Click **Browse...** to select an empty destination folder. Ensure the chosen drive has sufficient free disk space for your mailbox.
+6. **Start Export**: Click **Start Export** and leave the application running until it reports completion and integrity verification.
 
+### 2. Resuming Interrupted Exports
+If your computer sleeps, restarts, or you close the app during export:
+1. Reopen `Mailbox Rescue.exe`.
+2. Connect your account.
+3. Select the same scope and the **same destination backup folder**.
+4. Click **Start Export**. Mailbox Rescue automatically detects the existing `export.sqlite3` checkpoint and resumes without re-downloading already verified messages.
 
-## Development setup
+---
 
-Python 3.11+ is required.
-
-```powershell
-git clone https://github.com/dhar174/gmail-mailbox-rescue.git
-cd gmail-mailbox-rescue
-
-py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -e ".[dev]"
-
-mailbox-rescue
-```
-
-## Development OAuth configuration
-
-Create a Google Cloud OAuth **Desktop app** client with the Gmail API enabled and download its client configuration JSON.
-
-Do **not** commit that file.
-
-Either place it in the repository root as:
-
-```text
-client_secret.json
-```
-
-or point the application at it:
-
-```powershell
-$env:MAILBOX_RESCUE_GOOGLE_CLIENT_SECRETS = "C:\path\to\client_secret.json"
-mailbox-rescue
-```
-
-The application stores its token in the platform-specific user data directory, not in the repository.
-
-For development, this client can be replaced later with an OAuth client approved by a Google Workspace administrator. The export engine is deliberately independent of that deployment decision.
-
-## Security model
-
-- Gmail access is read-only.
-- User credentials are entered only into Google's OAuth pages.
-- No mailbox data is uploaded to a Mailbox Rescue server.
-- OAuth client configuration and user tokens are excluded from Git.
-- Exported messages remain local unless the user moves them elsewhere.
-
-## Archive layout
+## Archive Layout
 
 The completed archive produced by Mailbox Rescue is structured as a portable, self-describing, and verified backup:
 
@@ -86,16 +53,68 @@ Mailbox-Backup/
 └── export-report.html    # Standalone HTML summary report with verification status
 ```
 
-### Key archive principles
-
+### Key Archive Principles
 - **Canonical EMLs**: Individual `.eml` files contain the exact, unmodified raw bytes received from Gmail's API.
 - **MBOX Portability**: `mailbox.mbox` is regenerated from the canonical verified EML files for compatibility with standard email clients.
 - **Integrity Verification**: `checksums.sha256` and automatic post-export verification check that every saved file is intact and unmodified.
 - **Preserved Metadata**: The `metadata/` directory preserves Gmail thread relationships, label assignments, and account details in standard JSON formats without bloating message files.
 - **Self-Healing Resume**: `export.sqlite3` tracks completed progress, validates existing files on resume, and repairs corrupted or missing messages.
 
-## Running tests
+---
+
+## For Developers & Maintainers
+
+### Development Setup
+Python 3.11+ is required.
 
 ```powershell
+git clone https://github.com/dhar174/gmail-mailbox-rescue.git
+cd gmail-mailbox-rescue
+
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e ".[dev]"
+
+mailbox-rescue
+```
+
+### Development OAuth Configuration
+Create a Google Cloud OAuth **Desktop app** client with the Gmail API enabled and download its client configuration JSON.
+
+Either place it in the working directory as `client_secret.json` or configure the environment variable:
+
+```powershell
+$env:MAILBOX_RESCUE_GOOGLE_CLIENT_SECRETS = "C:\path\to\client_secret.json"
+mailbox-rescue
+```
+
+The application stores user tokens in `%LOCALAPPDATA%\Mailbox Rescue\Mailbox Rescue\google_token.json` via `platformdirs`, completely separate from the application code or repository.
+
+### Running Tests and Linting
+```powershell
+ruff check .
 pytest -v
 ```
+
+### Building the Windows Release Package
+To compile the standalone Windows GUI executable and assemble the release ZIP:
+
+```powershell
+# Clean build of standalone one-folder distribution and release ZIP
+powershell -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1 -Clean
+```
+
+To assemble a pilot distribution with an intentionally staged sidecar OAuth client configuration:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1 -Clean -OAuthClientConfig "C:\secure\client_secret.json"
+```
+
+The build script will:
+1. Compile `dist\Mailbox Rescue\Mailbox Rescue.exe` using PyInstaller (`packaging\mailbox-rescue.spec`) in windowed GUI mode (`console=False`).
+2. Copy `START HERE.txt` into the application directory.
+3. Verify release hygiene with `scripts\verify_release_hygiene.py`, ensuring zero token or export data leakage.
+4. Compress the folder into `dist\releases\Mailbox-Rescue-v0.1.0-win64.zip`.
+5. Run release hygiene checks on the generated ZIP.
+
+See [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) for full pre-release smoke testing steps.

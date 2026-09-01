@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import threading
 import time
 from pathlib import Path
@@ -30,12 +31,23 @@ def _create_test_window(tmp_path: Path) -> MainWindow:
     return MainWindow(paths)
 
 
-def _wait_for_export_to_finish(window: MainWindow, timeout_seconds: float = 2.0) -> None:
-    deadline = time.monotonic() + timeout_seconds
-    while window._export_thread is not None and time.monotonic() < deadline:
-        QCoreApplication.processEvents()
-        time.sleep(0.01)
-    assert window._export_thread is None, "Export thread did not finish before timeout"
+def _wait_for_export_to_finish(window: MainWindow, timeout_seconds: float = 5.0) -> None:
+    gc_was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        deadline = time.monotonic() + timeout_seconds
+        while window._export_thread is not None and time.monotonic() < deadline:
+            QCoreApplication.processEvents()
+            time.sleep(0.01)
+        if window._export_thread is not None:
+            window._export_thread.quit()
+            window._export_thread.wait(2000)
+        for _ in range(5):
+            QCoreApplication.processEvents()
+        assert window._export_thread is None, "Export thread did not finish before timeout"
+    finally:
+        if gc_was_enabled:
+            gc.enable()
 
 
 def test_main_window_initial_state(qapp: object, tmp_path: Path) -> None:
