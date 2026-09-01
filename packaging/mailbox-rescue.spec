@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 block_cipher = None
@@ -12,6 +13,12 @@ repo_root = spec_dir.parent if spec_dir.name == "packaging" else spec_dir
 src_dir = repo_root / "src"
 run_script = repo_root / "packaging" / "run_app.py"
 version_info_path = repo_root / "packaging" / "version_info.txt"
+
+
+def _is_unintended_windows_icu_binary(binary_name: str) -> bool:
+    """Reject external ICU4C DLLs that shadow the Windows system ICU API."""
+    filename = Path(binary_name.replace("\\", "/")).name.lower()
+    return filename == "icuuc.dll" or re.fullmatch(r"icudt\d+\.dll", filename) is not None
 
 a = Analysis(
     [str(run_script)],
@@ -62,6 +69,13 @@ a = Analysis(
     cipher=block_cipher,
     noarchive=False,
 )
+
+# Qt 6 uses Windows' System32 ICU API. If an unrelated ICU4C distribution is on
+# PATH during analysis, PyInstaller can collect its incompatible generic
+# icuuc.dll plus versioned data DLL and cause QtCore to fail with WinError 127.
+a.binaries = [
+    binary for binary in a.binaries if not _is_unintended_windows_icu_binary(binary[0])
+]
 
 pyz = PYZ(
     a.pure,
