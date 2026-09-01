@@ -13,7 +13,7 @@ This checklist defines the validation procedure and release audit record for Win
 | **Windows Build Environment** | Windows 11 (Build 26340, AMD64) |
 | **Python Version** | Python 3.12.2 (64-bit, MSC v.1937) |
 | **PyInstaller Version** | PyInstaller 6.22.2 |
-| **Build Command** | `.\scripts\build-windows.ps1 -Clean -OAuthClientConfig <external Desktop OAuth JSON>` |
+| **Build Command** | `powershell -ExecutionPolicy Bypass -File .\scripts\build-windows.ps1 -Clean -OAuthClientConfig "C:\path\to\client_secret.json"` |
 | **Target Artifact** | `dist\releases\Mailbox-Rescue-v0.1.0-win64.zip` (77,220,379 bytes / 73.64 MiB) |
 | **Live Smoke Test Date** | 2026-09-01 |
 
