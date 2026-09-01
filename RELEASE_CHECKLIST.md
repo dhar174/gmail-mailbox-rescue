@@ -9,7 +9,7 @@ This checklist defines the validation procedure and release audit record for Win
 | Property | Value / Record |
 | :--- | :--- |
 | **Application Version** | `0.1.0` |
-| **Build Commit SHA** | `d0c88e0a9652da79e2550f47f82160b6ceaf18e1` |
+| **Build Commit SHA** | `030b15cbcace0db1a686cc8385733bdf6c3bb14d` |
 | **Windows Build Environment** | Windows 11 (Build 26340, AMD64) |
 | **Python Version** | Python 3.12.2 (64-bit, MSC v.1937) |
 | **PyInstaller Version** | PyInstaller 6.22.2 |
