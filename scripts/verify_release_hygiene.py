@@ -85,7 +85,7 @@ def is_valid_loopback_redirect(uri: str) -> bool:
         if parsed.scheme != "http":
             return False
         return parsed.hostname in ALLOWED_LOOPBACK_HOSTNAMES
-    except Exception:
+    except ValueError:
         return False
 
 
