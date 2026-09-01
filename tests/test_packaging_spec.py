@@ -1,36 +1,45 @@
 from __future__ import annotations
 
-import ast
-import re
 from pathlib import Path
+import runpy
 
 
 SPEC_PATH = Path(__file__).resolve().parent.parent / "packaging" / "mailbox-rescue.spec"
 
 
-def _load_icu_filter():
-    tree = ast.parse(SPEC_PATH.read_text(encoding="utf-8"))
-    function = next(
-        (
-            node
-            for node in tree.body
-            if isinstance(node, ast.FunctionDef)
-            and node.name == "_is_unintended_windows_icu_binary"
-        ),
-        None,
-    )
-    assert function is not None, "packaging spec must define the Windows ICU filter"
+class _FakeAnalysis:
+    def __init__(self, *_args, **_kwargs) -> None:
+        self.binaries = [
+            ("icuuc.dll", "external/icuuc.dll", "BINARY"),
+            ("icudt78.dll", "external/icudt78.dll", "BINARY"),
+            (r"nested\ICUDT99.DLL", "external/icudt99.dll", "BINARY"),
+            ("PySide6/Qt6Core.dll", "pyside/Qt6Core.dll", "BINARY"),
+            ("icu.dll", "windows/icu.dll", "BINARY"),
+        ]
+        self.pure = []
+        self.zipped_data = []
+        self.scripts = []
+        self.zipfiles = []
+        self.datas = []
 
-    namespace = {"Path": Path, "re": re}
-    exec(compile(ast.Module(body=[function], type_ignores=[]), SPEC_PATH, "exec"), namespace)
-    return namespace["_is_unintended_windows_icu_binary"]
+
+def _fake_artifact(*_args, **_kwargs):
+    return object()
 
 
 def test_packaging_spec_rejects_external_icu_runtime_collision() -> None:
-    is_unintended_icu = _load_icu_filter()
+    result = runpy.run_path(
+        str(SPEC_PATH),
+        init_globals={
+            "SPECPATH": str(SPEC_PATH.parent),
+            "Analysis": _FakeAnalysis,
+            "PYZ": _fake_artifact,
+            "EXE": _fake_artifact,
+            "COLLECT": _fake_artifact,
+        },
+    )
 
-    assert is_unintended_icu("icuuc.dll") is True
-    assert is_unintended_icu("icudt78.dll") is True
-    assert is_unintended_icu(r"nested\ICUDT99.DLL") is True
-    assert is_unintended_icu("PySide6/Qt6Core.dll") is False
-    assert is_unintended_icu("icu.dll") is False
+    assert [binary[0] for binary in result["a"].binaries] == [
+        "PySide6/Qt6Core.dll",
+        "icu.dll",
+    ]
