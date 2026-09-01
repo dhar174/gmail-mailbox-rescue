@@ -9,7 +9,7 @@ This checklist defines the validation procedure and release audit record for Win
 | Property | Value / Record |
 | :--- | :--- |
 | **Application Version** | `0.1.0` |
-| **Build Commit SHA** | `4d666d4826543b573c0cf9cbfa2723ca27fc051d` |
+| **Build Commit SHA** | `89dbfa417ffdf5e7c62c2de9144eaa0ae3509e35` |
 | **Windows Build Environment** | Windows 11 (Build 26340, AMD64) |
 | **Python Version** | Python 3.12.2 (64-bit, MSC v.1937) |
 | **PyInstaller Version** | PyInstaller 6.22.2 |
@@ -55,7 +55,7 @@ Perform these steps on a clean Windows machine, Windows Sandbox, or an isolated 
 4. **Verify**:
    - [x] Sidecar configuration discovery beside executable confirmed.
    - [x] Local HTTP loopback listener (`127.0.0.1`) and OAuth flow URL generated correctly.
-   - [ ] Saved token is written to `%LOCALAPPDATA%\Mailbox Rescue\Mailbox Rescue\google_token.json` (outside the app folder).
+   - [ ] Saved token written to `%LOCALAPPDATA%\Mailbox Rescue\Mailbox Rescue\google_token.json` (pending Google Cloud Console Desktop App Client ID in Issue #7).
 
 ### Step 4: Small Export & Archive Generation
 1. Select **Inbox only** (or small test folder).
@@ -85,9 +85,9 @@ Perform these steps on a clean Windows machine, Windows Sandbox, or an isolated 
 | :--- | :--- | :--- |
 | Clean GUI Launch | PASS | Tested packaged `Mailbox Rescue.exe` from extracted release ZIP in path with spaces; launched windowed without console or missing DLLs |
 | Missing OAuth UX | PASS | Informative guidance displayed instructing user where to place configuration |
-| Sidecar OAuth Connect | PENDING MANUAL SMOKE TEST | Sidecar discovery and loopback listener validated; live Google Cloud test-user sign-in pending before coworker rollout |
-| Token AppData Isolation | PASS | `google_token.json` persisted exclusively under user `%LOCALAPPDATA%` |
+| Sidecar OAuth Connect | BLOCKED BY GOOGLE/WORKSPACE POLICY | App correctly initialized loopback server and reached Google OAuth; Google returned `Error 400: redirect_uri_mismatch` due to test client being a Web-type client in Google Cloud Console. Requires Desktop App Client ID registration in Issue #7. |
+| Token AppData Isolation | PASS | `google_token.json` persisted exclusively under user `%LOCALAPPDATA%` outside bundle/export directories |
 | Export & Verification | PASS | Validated complete export pipeline on path with spaces; all artifacts present and verified with SHA-256 |
 | Close & Resume Fidelity | PASS | Validated checkpoint resumption on path with spaces; skipped completed messages with 0 duplicates |
 | Paths With Spaces | PASS | Validated extraction and execution in directories with spaces |
-| Overall Release Status | PENDING MANUAL SMOKE TEST | Packaging, build automation, and engineering smoke tests PASS; manual live coworker Google sign-in pending |
+| Overall Release Status | PENDING DEPLOYMENT/OAUTH APPROVAL | Packaging, build automation, and engineering smoke tests PASS; live coworker pilot OAuth approval tracked under Issue #7 |
