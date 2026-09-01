@@ -85,9 +85,9 @@ Perform these steps on a clean Windows machine, Windows Sandbox, or an isolated 
 | :--- | :--- | :--- |
 | Clean GUI Launch | PASS | Tested packaged `Mailbox Rescue.exe` from extracted release ZIP in path with spaces; launched windowed without console or missing DLLs |
 | Missing OAuth UX | PASS | Informative guidance displayed instructing user where to place configuration |
-| Sidecar OAuth Connect | BLOCKED BY GOOGLE/WORKSPACE POLICY | App correctly initialized loopback server and reached Google OAuth; Google returned `Error 400: redirect_uri_mismatch` due to test client being a Web-type client in Google Cloud Console. Requires Desktop App Client ID registration in Issue #7. |
-| Token AppData Isolation | PASS | `google_token.json` persisted exclusively under user `%LOCALAPPDATA%` outside bundle/export directories |
+| Sidecar OAuth Connect | BLOCKED BY OAUTH CLIENT CONFIGURATION | The packaged app successfully discovered the sidecar, started its loopback listener, and reached Google OAuth. Google rejected the flow with redirect_uri_mismatch because the available test credential is a Web-type OAuth client. A Desktop App OAuth client is required for the final live sign-in test. Production organization approval remains tracked in Issue #7. |
+| Token AppData Isolation | PENDING LIVE OAUTH VALIDATION | Storage path and isolation are covered by automated tests; actual packaged token creation remains pending successful Desktop OAuth consent. |
 | Export & Verification | PASS | Validated complete export pipeline on path with spaces; all artifacts present and verified with SHA-256 |
 | Close & Resume Fidelity | PASS | Validated checkpoint resumption on path with spaces; skipped completed messages with 0 duplicates |
 | Paths With Spaces | PASS | Validated extraction and execution in directories with spaces |
-| Overall Release Status | PENDING DEPLOYMENT/OAUTH APPROVAL | Packaging, build automation, and engineering smoke tests PASS; live coworker pilot OAuth approval tracked under Issue #7 |
+| Overall Release Status | PENDING LIVE DESKTOP OAUTH VALIDATION | Packaging, build automation, export/resume engineering validation, and release hygiene PASS; final packaged Google Desktop OAuth consent and live token creation remain pending. |
