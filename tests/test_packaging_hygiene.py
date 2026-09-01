@@ -55,8 +55,7 @@ def test_hygiene_rejects_token_files(tmp_path: Path, token_name: str) -> None:
 
     # Even with allow_oauth_client=True, token files are STILL prohibited
     violations_allowed = hygiene.inspect_path(bundle_dir, allow_oauth_client=True)
-    assert len(violations_allowed) == 1
-    assert "Prohibited token file detected" in violations_allowed[0]
+    assert any("Prohibited token file detected" in v for v in violations_allowed)
 
 
 @pytest.mark.parametrize(
@@ -105,22 +104,27 @@ def test_hygiene_rejects_dev_cache_artifacts(tmp_path: Path) -> None:
     assert any("Prohibited development/cache artifact detected" in v for v in violations)
 
 
-def test_hygiene_one_valid_root_sidecar_allowed(tmp_path: Path) -> None:
+def test_hygiene_configured_directory_requires_exactly_one_sidecar(tmp_path: Path) -> None:
     bundle_dir = tmp_path / "Mailbox Rescue"
     bundle_dir.mkdir()
     (bundle_dir / "Mailbox Rescue.exe").write_bytes(b"MZ dummy")
+
+    # 1. Configured directory with ZERO sidecars -> fails
+    violations_zero = hygiene.inspect_path(bundle_dir, allow_oauth_client=True)
+    assert len(violations_zero) == 1
+    assert "Expected exactly one OAuth client configuration" in violations_zero[0]
+
+    # 2. Configured directory with EXACTLY ONE root sidecar -> passes
     (bundle_dir / "client_secret.json").write_text(
         json.dumps(_sample_installed_oauth_dict()), encoding="utf-8"
     )
+    violations_one = hygiene.inspect_path(bundle_dir, allow_oauth_client=True)
+    assert violations_one == []
 
-    # Without allow_oauth_client -> rejected
-    violations_no_flag = hygiene.inspect_path(bundle_dir, allow_oauth_client=False)
-    assert len(violations_no_flag) == 1
-    assert "Unexpected or misplaced OAuth client secrets file detected" in violations_no_flag[0]
-
-    # With allow_oauth_client -> permitted
-    violations_ok = hygiene.inspect_path(bundle_dir, allow_oauth_client=True)
-    assert violations_ok == []
+    # 3. Generic directory with sidecar -> fails
+    violations_generic = hygiene.inspect_path(bundle_dir, allow_oauth_client=False)
+    assert len(violations_generic) == 1
+    assert "Unexpected OAuth client secrets file detected" in violations_generic[0]
 
 
 def test_hygiene_rejects_second_root_credential(tmp_path: Path) -> None:
@@ -135,7 +139,7 @@ def test_hygiene_rejects_second_root_credential(tmp_path: Path) -> None:
 
     violations = hygiene.inspect_path(bundle_dir, allow_oauth_client=True)
     assert len(violations) >= 1
-    assert any("Unexpected or misplaced OAuth client secrets file detected" in v for v in violations)
+    assert any("Expected exactly one OAuth client configuration" in v for v in violations)
 
 
 def test_hygiene_rejects_nested_credential(tmp_path: Path) -> None:
@@ -152,7 +156,7 @@ def test_hygiene_rejects_nested_credential(tmp_path: Path) -> None:
 
     violations = hygiene.inspect_path(bundle_dir, allow_oauth_client=True)
     assert len(violations) >= 1
-    assert any("Unexpected or misplaced OAuth client secrets file detected" in v for v in violations)
+    assert any("Expected exactly one OAuth client configuration" in v for v in violations)
 
 
 def test_hygiene_rejects_only_nested_credential(tmp_path: Path) -> None:
@@ -180,32 +184,67 @@ def test_hygiene_rejects_malformed_root_config(tmp_path: Path) -> None:
     assert any("Invalid staged OAuth client config" in v for v in violations)
 
 
-def test_hygiene_zip_one_valid_root_sidecar(tmp_path: Path) -> None:
-    zip_path = tmp_path / "release.zip"
+def test_hygiene_zip_configured_requires_exactly_one_sidecar(tmp_path: Path) -> None:
     valid_content = json.dumps(_sample_installed_oauth_dict()).encode("utf-8")
-    with zipfile.ZipFile(zip_path, "w") as zf:
+
+    # 1. Configured ZIP with ZERO sidecars -> fails
+    zip_empty = tmp_path / "release_empty.zip"
+    with zipfile.ZipFile(zip_empty, "w") as zf:
+        zf.writestr("Mailbox Rescue/Mailbox Rescue.exe", b"MZ dummy")
+
+    violations_empty = hygiene.inspect_path(zip_empty, allow_oauth_client=True)
+    assert len(violations_empty) == 1
+    assert "Expected exactly one OAuth client configuration" in violations_empty[0]
+
+    # 2. Configured ZIP with EXACTLY ONE sidecar at expected path -> passes
+    zip_ok = tmp_path / "release_ok.zip"
+    with zipfile.ZipFile(zip_ok, "w") as zf:
         zf.writestr("Mailbox Rescue/Mailbox Rescue.exe", b"MZ dummy")
         zf.writestr("Mailbox Rescue/client_secret.json", valid_content)
+
+    violations_ok = hygiene.inspect_path(zip_ok, allow_oauth_client=True)
+    assert violations_ok == []
+
+
+def test_hygiene_zip_rejects_sidecar_at_zip_root(tmp_path: Path) -> None:
+    zip_path = tmp_path / "release_root.zip"
+    valid_content = json.dumps(_sample_installed_oauth_dict()).encode("utf-8")
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("client_secret.json", valid_content)
 
     violations = hygiene.inspect_path(zip_path, allow_oauth_client=True)
-    assert violations == []
+    assert len(violations) == 1
+    assert "Unexpected or misplaced OAuth client secrets file detected" in violations[0]
 
 
-def test_hygiene_zip_rejects_extra_or_nested_secrets(tmp_path: Path) -> None:
-    zip_path = tmp_path / "release.zip"
+def test_hygiene_zip_rejects_multiple_app_folders_or_extra_secrets(tmp_path: Path) -> None:
+    zip_path = tmp_path / "release_multi.zip"
     valid_content = json.dumps(_sample_installed_oauth_dict()).encode("utf-8")
     with zipfile.ZipFile(zip_path, "w") as zf:
         zf.writestr("Mailbox Rescue/Mailbox Rescue.exe", b"MZ dummy")
         zf.writestr("Mailbox Rescue/client_secret.json", valid_content)
-        zf.writestr("Mailbox Rescue/nested/client_secret_extra.json", valid_content)
+        zf.writestr("Other Folder/client_secret.json", valid_content)
 
     violations = hygiene.inspect_path(zip_path, allow_oauth_client=True)
     assert len(violations) >= 1
-    assert any("Unexpected or misplaced OAuth client secrets file detected" in v for v in violations)
+    assert any("Expected exactly one OAuth client configuration" in v for v in violations)
+
+
+def test_hygiene_zip_rejects_duplicate_entries(tmp_path: Path) -> None:
+    zip_path = tmp_path / "release_dup.zip"
+    valid_content = json.dumps(_sample_installed_oauth_dict()).encode("utf-8")
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("Mailbox Rescue/Mailbox Rescue.exe", b"MZ dummy")
+        zf.writestr("Mailbox Rescue/client_secret.json", valid_content)
+        zf.writestr("Mailbox Rescue/client_secret.json", valid_content)
+
+    violations = hygiene.inspect_path(zip_path, allow_oauth_client=True)
+    assert len(violations) >= 1
+    assert any("Expected exactly one OAuth client configuration" in v for v in violations)
 
 
 def test_hygiene_zip_rejects_malformed_sidecar(tmp_path: Path) -> None:
-    zip_path = tmp_path / "release.zip"
+    zip_path = tmp_path / "release_bad.zip"
     bad_content = b'{"web": {}}'
     with zipfile.ZipFile(zip_path, "w") as zf:
         zf.writestr("Mailbox Rescue/Mailbox Rescue.exe", b"MZ dummy")
@@ -491,13 +530,20 @@ def test_validate_oauth_client_config_invalid_field_types(
 @pytest.mark.parametrize(
     "bad_redirect_uris",
     [
-        "http://localhost",                  # string instead of list
-        [],                                  # empty list
-        [""],                                # list with empty string
-        ["http://localhost", "  "],          # whitespace item
-        [123],                               # non-string in list
-        ["https://evil.example/callback"],   # remote URL with no loopback
+        "http://localhost",                                # string instead of list
+        [],                                                # empty list
+        [""],                                              # list with empty string
+        ["http://localhost", "  "],                        # whitespace item
+        [123],                                             # non-string in list
+        ["https://evil.example/callback"],                 # remote URL
         ["https://my-web-app.example/oauth"],
+        ["http://localhost.evil.example"],                 # prefix spoofing
+        ["http://localhost.evil.example/callback"],
+        ["http://127.0.0.1.evil.example/"],                # prefix spoofing
+        ["https://localhost"],                             # https loopback rejected
+        ["https://127.0.0.1:8080/"],
+        ["ftp://localhost"],                               # non-http scheme
+        ["urn:ietf:wg:oauth:2.0:oob"],                     # OOB no longer counts as loopback
     ],
 )
 def test_validate_oauth_client_config_invalid_redirect_uris(
@@ -514,6 +560,33 @@ def test_validate_oauth_client_config_invalid_redirect_uris(
     errors = hygiene.validate_oauth_client_config(config_file)
     assert len(errors) == 1
     assert "Invalid 'redirect_uris'" in errors[0]
+
+
+@pytest.mark.parametrize(
+    "valid_redirect_uris",
+    [
+        ["http://localhost"],
+        ["http://localhost:12345/"],
+        ["http://127.0.0.1"],
+        ["http://127.0.0.1:54321/"],
+        ["http://[::1]/"],
+        ["http://[::1]:8765/"],
+        ["http://localhost", "http://127.0.0.1"],
+    ],
+)
+def test_validate_oauth_client_config_valid_redirect_uris(
+    tmp_path: Path, valid_redirect_uris: list[str]
+) -> None:
+    config = _sample_installed_oauth_dict()
+    installed = config["installed"]
+    assert isinstance(installed, dict)
+    installed["redirect_uris"] = valid_redirect_uris
+
+    config_file = tmp_path / "client_secret.json"
+    config_file.write_text(json.dumps(config), encoding="utf-8")
+
+    errors = hygiene.validate_oauth_client_config(config_file)
+    assert errors == []
 
 
 def test_validate_oauth_client_config_cli(

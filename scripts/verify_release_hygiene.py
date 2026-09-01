@@ -4,6 +4,7 @@ import argparse
 import fnmatch
 import json
 import sys
+import urllib.parse
 import zipfile
 from pathlib import Path
 
@@ -69,12 +70,23 @@ ALLOWED_TOKEN_URIS = (
     "https://accounts.google.com/o/oauth2/token",
 )
 
-ALLOWED_LOOPBACK_REDIRECT_PREFIXES = (
-    "http://localhost",
-    "http://127.0.0.1",
-    "http://[::1]",
-    "urn:ietf:wg:oauth:2.0:oob",
-)
+ALLOWED_LOOPBACK_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def is_valid_loopback_redirect(uri: str) -> bool:
+    """Check if a URI is a valid local HTTP loopback redirect for desktop OAuth.
+
+    Requires scheme == 'http' and hostname in {'localhost', '127.0.0.1', '::1'}.
+    Port is optional.
+    Strictly rejects remote URLs, https loopbacks, prefix-spoofed domains, and OOB URIs.
+    """
+    try:
+        parsed = urllib.parse.urlsplit(uri.strip())
+        if parsed.scheme != "http":
+            return False
+        return parsed.hostname in ALLOWED_LOOPBACK_HOSTNAMES
+    except Exception:
+        return False
 
 
 def validate_oauth_client_content(content_bytes: bytes, source_name: str) -> list[str]:
@@ -144,10 +156,7 @@ def validate_oauth_client_content(content_bytes: bytes, source_name: str) -> lis
                 errors.append(
                     f"Invalid 'redirect_uris' in '{source_name}': All items must be non-empty strings."
                 )
-            elif not any(
-                isinstance(u, str) and u.startswith(ALLOWED_LOOPBACK_REDIRECT_PREFIXES)
-                for u in val
-            ):
+            elif not any(isinstance(u, str) and is_valid_loopback_redirect(u) for u in val):
                 errors.append(
                     f"Invalid 'redirect_uris' in '{source_name}': Must contain at least one local loopback redirect URI (e.g. 'http://localhost' or 'http://127.0.0.1')."
                 )
@@ -238,11 +247,18 @@ def inspect_path(
     *,
     allow_oauth_client: bool = False,
 ) -> list[str]:
-    """Inspect a directory or ZIP archive for prohibited files.
+    """Inspect a directory or ZIP archive for prohibited files and verify OAuth sidecar rules.
 
-    When allow_oauth_client is True, permits exactly ONE validated 'client_secret.json'
-    at the root of the distribution bundle (or <root>/client_secret.json in ZIP).
-    All other matching client secret files, tokens, caches, and mail exports are rejected.
+    When allow_oauth_client is False (generic release):
+      - Expected OAuth client configs: 0.
+      - Any client_secret*.json or client_secrets*.json fails hygiene.
+
+    When allow_oauth_client is True (configured release):
+      - Expected OAuth client configs: EXACTLY 1.
+      - For directory: exactly 'client_secret.json' at the bundle root.
+      - For ZIP archive: exactly 'Mailbox Rescue/client_secret.json'.
+      - Duplicate ZIP entries, alternative folders, or 0 configs fail hygiene.
+      - The permitted sidecar content is validated.
 
     Returns a list of violation messages.
     """
@@ -250,22 +266,26 @@ def inspect_path(
 
     if target.is_file() and target.suffix.lower() == ".zip":
         with zipfile.ZipFile(target, "r") as zf:
-            for entry in zf.namelist():
+            entries = zf.namelist()
+            oauth_candidates: list[str] = []
+
+            for entry in entries:
                 name = Path(entry).name
                 full_rel = entry.replace("\\", "/")
-                # Check prohibited tokens
+
+                # 1. Check prohibited tokens
                 for pat in PROHIBITED_TOKEN_PATTERNS:
                     if fnmatch.fnmatch(name.lower(), pat.lower()):
                         violations.append(f"Prohibited token file detected: '{full_rel}'")
                         break
 
-                # Check prohibited mail / export artifacts
+                # 2. Check prohibited mail / export artifacts
                 for pat in PROHIBITED_MAIL_AND_DATA_PATTERNS:
                     if fnmatch.fnmatch(name.lower(), pat.lower()):
                         violations.append(f"Prohibited export/data file detected: '{full_rel}'")
                         break
 
-                # Check prohibited dev/cache artifacts
+                # 3. Check prohibited dev/cache artifacts
                 for pat in PROHIBITED_DEV_AND_CACHE_PATTERNS:
                     if fnmatch.fnmatch(name.lower(), pat.lower()) or any(
                         fnmatch.fnmatch(part.lower(), pat.lower()) for part in full_rel.split("/")
@@ -275,50 +295,68 @@ def inspect_path(
                         )
                         break
 
-                # Check client secrets
+                # 4. Collect OAuth candidate files
                 for pat in CLIENT_SECRET_PATTERNS:
                     if fnmatch.fnmatch(name.lower(), pat.lower()):
-                        parts = [p for p in full_rel.split("/") if p]
-                        is_allowed_root_path = (
-                            allow_oauth_client
-                            and (
-                                full_rel == "client_secret.json"
-                                or (len(parts) == 2 and parts[1] == "client_secret.json")
-                            )
-                        )
-                        if is_allowed_root_path:
-                            content = zf.read(entry)
-                            content_errors = validate_oauth_client_content(content, full_rel)
-                            for err in content_errors:
-                                violations.append(f"Invalid staged OAuth client config: {err}")
-                        else:
-                            violations.append(
-                                f"Unexpected or misplaced OAuth client secrets file detected: '{full_rel}'. "
-                                "When OAuth staging is enabled, only a single 'client_secret.json' "
-                                "at the application root is permitted."
-                            )
+                        oauth_candidates.append(full_rel)
                         break
 
+            # Evaluate OAuth candidates against policy
+            expected_zip_path = "Mailbox Rescue/client_secret.json"
+            if not allow_oauth_client:
+                if oauth_candidates:
+                    for cand in oauth_candidates:
+                        violations.append(
+                            f"Unexpected OAuth client secrets file detected: '{cand}'. "
+                            "Pass --allow-oauth-client only if an approved client_secret.json "
+                            "was intentionally staged."
+                        )
+            else:
+                if len(oauth_candidates) == 0:
+                    violations.append(
+                        f"Expected exactly one OAuth client configuration '{expected_zip_path}' "
+                        "in archive when OAuth staging is enabled, but none was found."
+                    )
+                elif len(oauth_candidates) > 1:
+                    violations.append(
+                        f"Expected exactly one OAuth client configuration '{expected_zip_path}', "
+                        f"but found {len(oauth_candidates)} candidate entries: {oauth_candidates}."
+                    )
+                else:
+                    cand = oauth_candidates[0]
+                    if cand != expected_zip_path:
+                        violations.append(
+                            f"Unexpected or misplaced OAuth client secrets file detected: '{cand}'. "
+                            f"When OAuth staging is enabled, exactly '{expected_zip_path}' is permitted."
+                        )
+                    else:
+                        content = zf.read(cand)
+                        content_errors = validate_oauth_client_content(content, cand)
+                        for err in content_errors:
+                            violations.append(f"Invalid staged OAuth client config: {err}")
+
     elif target.is_dir():
+        oauth_candidates_dir: list[tuple[str, Path]] = []
+
         for item in target.rglob("*"):
             if not item.is_file():
                 continue
             name = item.name
             rel = item.relative_to(target).as_posix()
 
-            # Check prohibited tokens
+            # 1. Check prohibited tokens
             for pat in PROHIBITED_TOKEN_PATTERNS:
                 if fnmatch.fnmatch(name.lower(), pat.lower()):
                     violations.append(f"Prohibited token file detected: '{rel}'")
                     break
 
-            # Check prohibited mail / export artifacts
+            # 2. Check prohibited mail / export artifacts
             for pat in PROHIBITED_MAIL_AND_DATA_PATTERNS:
                 if fnmatch.fnmatch(name.lower(), pat.lower()):
                     violations.append(f"Prohibited export/data file detected: '{rel}'")
                     break
 
-            # Check prohibited dev/cache artifacts
+            # 3. Check prohibited dev/cache artifacts
             for pat in PROHIBITED_DEV_AND_CACHE_PATTERNS:
                 if fnmatch.fnmatch(name.lower(), pat.lower()) or any(
                     fnmatch.fnmatch(part.lower(), pat.lower()) for part in rel.split("/")
@@ -326,21 +364,45 @@ def inspect_path(
                     violations.append(f"Prohibited development/cache artifact detected: '{rel}'")
                     break
 
-            # Check client secrets
+            # 4. Collect OAuth candidate files
             for pat in CLIENT_SECRET_PATTERNS:
                 if fnmatch.fnmatch(name.lower(), pat.lower()):
-                    is_allowed_root_path = allow_oauth_client and (rel == "client_secret.json")
-                    if is_allowed_root_path:
-                        config_errors = validate_oauth_client_config(item)
-                        for err in config_errors:
-                            violations.append(f"Invalid staged OAuth client config: {err}")
-                    else:
-                        violations.append(
-                            f"Unexpected or misplaced OAuth client secrets file detected: '{rel}'. "
-                            "When OAuth staging is enabled, only a single 'client_secret.json' "
-                            "at the application root is permitted."
-                        )
+                    oauth_candidates_dir.append((rel, item))
                     break
+
+        # Evaluate OAuth candidates against policy
+        expected_dir_path = "client_secret.json"
+        if not allow_oauth_client:
+            if oauth_candidates_dir:
+                for rel, _ in oauth_candidates_dir:
+                    violations.append(
+                        f"Unexpected OAuth client secrets file detected: '{rel}'. "
+                        "Pass --allow-oauth-client only if an approved client_secret.json "
+                        "was intentionally staged."
+                    )
+        else:
+            if len(oauth_candidates_dir) == 0:
+                violations.append(
+                    f"Expected exactly one OAuth client configuration '{expected_dir_path}' "
+                    "at bundle root when OAuth staging is enabled, but none was found."
+                )
+            elif len(oauth_candidates_dir) > 1:
+                cand_paths = [r for r, _ in oauth_candidates_dir]
+                violations.append(
+                    f"Expected exactly one OAuth client configuration '{expected_dir_path}', "
+                    f"but found {len(oauth_candidates_dir)} candidate files: {cand_paths}."
+                )
+            else:
+                rel, item_path = oauth_candidates_dir[0]
+                if rel != expected_dir_path:
+                    violations.append(
+                        f"Unexpected or misplaced OAuth client secrets file detected: '{rel}'. "
+                        f"When OAuth staging is enabled, exactly '{expected_dir_path}' at root is permitted."
+                    )
+                else:
+                    config_errors = validate_oauth_client_config(item_path)
+                    for err in config_errors:
+                        violations.append(f"Invalid staged OAuth client config: {err}")
 
     else:
         violations.append(f"Target path does not exist or is not a directory/zip: {target}")
