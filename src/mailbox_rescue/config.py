@@ -16,7 +16,7 @@ def resolve_client_secrets_path() -> Path:
 
     Precedence:
     1. MAILBOX_RESCUE_GOOGLE_CLIENT_SECRETS environment variable
-    2. Frozen app executable directory / client_secret.json (when packaged)
+    2. Beside the frozen macOS .app bundle, or beside the frozen executable
     3. Development working directory / client_secret.json
     """
     configured_client = os.getenv("MAILBOX_RESCUE_GOOGLE_CLIENT_SECRETS")
@@ -24,7 +24,14 @@ def resolve_client_secrets_path() -> Path:
         return Path(configured_client).expanduser().resolve()
 
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent / "client_secret.json"
+        executable = Path(sys.executable).resolve()
+        if sys.platform == "darwin":
+            for ancestor in executable.parents:
+                if ancestor.suffix.lower() == ".app":
+                    return ancestor.parent / "client_secret.json"
+        # Also supports a frozen command-line executable without an app bundle.
+        # Never fall back to the working directory for a missing packaged sidecar.
+        return executable.parent / "client_secret.json"
 
     return Path.cwd() / "client_secret.json"
 
