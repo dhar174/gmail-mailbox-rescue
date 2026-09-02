@@ -138,6 +138,20 @@ mailbox-rescue
 Confirm the GUI and a small development export before investigating packaging problems.
 Use an approved Desktop OAuth client stored outside the repository.
 
+For Intel builds, install the current `cryptography` dependency with static OpenSSL
+linking before packaging. Its upstream macOS wheels now target Apple Silicon;
+an ordinary Intel source install can conflict with Python's OpenSSL in the bundle.
+With Xcode command-line tools, Homebrew OpenSSL, and Rust available, run this in
+the activated virtual environment (also used by the Intel CI job):
+
+```bash
+env OPENSSL_STATIC=1 OPENSSL_DIR="$(brew --prefix openssl@3)" \
+  python -m pip install --force-reinstall --no-cache-dir --no-binary cryptography cryptography
+```
+
+See the [cryptography macOS build instructions](https://cryptography.io/en/latest/installation/#building-cryptography-on-macos).
+These tools are only needed on the build machine; the tester needs only the ZIP.
+
 ```bash
 # Generic build: zero OAuth client files
 ./scripts/build-macos.sh --clean
