@@ -64,7 +64,15 @@ capture.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
 capture.arguments = ["-x", "-l", String(windowID), screenshot]
 do {
     try capture.run()
-    capture.waitUntilExit()
+    let captureDeadline = Date().addingTimeInterval(15)
+    while capture.isRunning && Date() < captureDeadline {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+    }
+    if capture.isRunning {
+        capture.terminate()
+        app.terminate()
+        fail("Window capture timed out; runner screen-capture access may be unavailable")
+    }
     guard capture.terminationStatus == 0,
           let attributes = try? FileManager.default.attributesOfItem(atPath: screenshot),
           let size = attributes[.size] as? NSNumber, size.intValue > 0 else {

@@ -103,6 +103,7 @@ jobs:
       - name: Build and verify generic macOS ZIP
         run: ./scripts/build-macos.sh --clean
       - name: Launch extracted packaged app with native macOS UI (no OAuth)
+        timeout-minutes: 2
         run: |
           extraction="$RUNNER_TEMP/Mailbox Rescue Packaged Test"
           mkdir -p "$extraction"
