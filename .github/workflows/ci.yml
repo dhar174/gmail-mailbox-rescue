@@ -48,3 +48,54 @@ jobs:
 
       - name: Run tests with pytest
         run: pytest -v
+
+  macos:
+    name: macOS arm64 tests and package
+    runs-on: macos-15
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          architecture: arm64
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Ruff
+        run: python -m ruff check .
+      - name: Full pytest suite
+        run: python -m pytest -v
+      - name: Source GUI initialization (offscreen, no OAuth)
+        run: |
+          python - <<'PY'
+          from PySide6.QtCore import QTimer
+          from PySide6.QtWidgets import QApplication
+          from mailbox_rescue.config import AppPaths
+          from mailbox_rescue.ui.main_window import MainWindow
+          app = QApplication([])
+          paths = AppPaths.discover()
+          window = MainWindow(paths)
+          window.show()
+          QTimer.singleShot(500, app.quit)
+          assert app.exec() == 0
+          assert not paths.token_file.exists()
+          print("PASS: source GUI initialized offscreen; no live OAuth/export tested")
+          print(f"platformdirs token location (no token created): {paths.token_file}")
+          PY
+      - name: Build and verify generic macOS ZIP
+        run: ./scripts/build-macos.sh --clean
+      - name: Upload generic ZIP only (no OAuth or mailbox data)
+        uses: actions/upload-artifact@v7
+        with:
+          name: Mailbox-Rescue-macos-arm64
+          path: dist/macos/releases/Mailbox-Rescue-v*-macos-arm64.zip
+          if-no-files-found: error
+          compression-level: 0
