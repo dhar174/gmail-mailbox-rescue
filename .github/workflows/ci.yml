@@ -50,8 +50,18 @@ jobs:
         run: pytest -v
 
   macos:
-    name: macOS arm64 tests and package
-    runs-on: macos-15
+    name: macOS ${{ matrix.arch }} tests and package
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            arch: arm64
+            python_arch: arm64
+          - os: macos-15-intel
+            arch: x86_64
+            python_arch: x64
     timeout-minutes: 30
     permissions:
       contents: read
@@ -64,7 +74,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
-          architecture: arm64
+          architecture: ${{ matrix.python_arch }}
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -96,7 +106,7 @@ jobs:
         run: |
           extraction="$RUNNER_TEMP/Mailbox Rescue Packaged Test"
           mkdir -p "$extraction"
-          ditto -x -k dist/macos/releases/Mailbox-Rescue-v*-macos-arm64.zip "$extraction"
+          ditto -x -k dist/macos/releases/Mailbox-Rescue-v*-macos-${{ matrix.arch }}.zip "$extraction"
           app="$extraction/Mailbox Rescue/Mailbox Rescue.app"
           swiftc scripts/check-macos-window.swift -o "$RUNNER_TEMP/check-macos-window"
           env -u QT_QPA_PLATFORM /usr/bin/open -n \
@@ -112,13 +122,13 @@ jobs:
       - name: Upload packaged startup screenshot (disconnected app only)
         uses: actions/upload-artifact@v7
         with:
-          name: Mailbox-Rescue-macos-startup-evidence
+          name: Mailbox-Rescue-macos-${{ matrix.arch }}-startup-evidence
           path: ${{ runner.temp }}/packaged-macos-window.png
           if-no-files-found: error
       - name: Upload generic ZIP only (no OAuth or mailbox data)
         uses: actions/upload-artifact@v7
         with:
-          name: Mailbox-Rescue-macos-arm64
-          path: dist/macos/releases/Mailbox-Rescue-v*-macos-arm64.zip
+          name: Mailbox-Rescue-macos-${{ matrix.arch }}
+          path: dist/macos/releases/Mailbox-Rescue-v*-macos-${{ matrix.arch }}.zip
           if-no-files-found: error
           compression-level: 0
