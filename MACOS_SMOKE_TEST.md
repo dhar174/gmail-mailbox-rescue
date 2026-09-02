@@ -2,8 +2,9 @@
 
 REAL MACOS PACKAGED SMOKE TEST: NOT PERFORMED
 
-Issue #20 remains open. CI can establish source test compatibility and produce a
-generic arm64 ZIP; it does not demonstrate a coworker's interactive workflow.
+Issue #20 remains open. CI tests source compatibility, produces separate generic
+arm64 and x86_64 ZIPs, and checks native packaged launch and quit on each runner.
+It does not demonstrate a coworker's interactive OAuth/export/resume workflow.
 The existing Windows qualification in RELEASE_CHECKLIST.md is separate.
 
 ## Tester record
