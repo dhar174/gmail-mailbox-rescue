@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import zipfile
 from pathlib import Path
 
@@ -14,6 +15,127 @@ assert _spec is not None
 assert _spec.loader is not None
 hygiene = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(hygiene)
+
+
+@pytest.fixture(params=["directory", "zip"])
+def mac_package(tmp_path: Path, request: pytest.FixtureRequest):
+    """Create synthetic packages only; no OAuth or mailbox data is used."""
+    def build(extra_files: dict[str, bytes]) -> Path:
+        files = {
+            "Mailbox Rescue.app/Contents/MacOS/Mailbox Rescue": b"synthetic executable",
+            "Mailbox Rescue.app/Contents/Info.plist": b"synthetic plist",
+            "START HERE.txt": b"instructions",
+            **extra_files,
+        }
+        if request.param == "zip":
+            target = tmp_path / "macos.zip"
+            with zipfile.ZipFile(target, "w") as archive:
+                for name, content in files.items():
+                    archive.writestr(f"Mailbox Rescue/{name}", content)
+        else:
+            target = tmp_path / "Mailbox Rescue"
+            for name, content in files.items():
+                path = target / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+        return target
+    return build
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_macos_package_valid(mac_package, configured: bool) -> None:
+    files = {}
+    if configured:
+        files["client_secret.json"] = json.dumps(_sample_installed_oauth_dict()).encode()
+    assert hygiene.inspect_path(mac_package(files), allow_oauth_client=configured) == []
+
+
+@pytest.mark.parametrize(
+    "sidecars",
+    [
+        [],
+        ["client_secret.json", "client_secret_old.json"],
+        ["nested/client_secret.json"],
+        ["Mailbox Rescue.app/client_secret.json"],
+        ["Mailbox Rescue.app/Contents/MacOS/client_secret.json"],
+        ["Mailbox Rescue.app/Contents/Resources/client_secret.json"],
+        ["client_secret.json", "Mailbox Rescue.app/Contents/client_secret_extra.json"],
+    ],
+)
+def test_macos_package_rejects_missing_duplicate_or_misplaced_oauth(mac_package, sidecars) -> None:
+    content = json.dumps(_sample_installed_oauth_dict()).encode()
+    assert hygiene.inspect_path(
+        mac_package(dict.fromkeys(sidecars, content)), allow_oauth_client=True
+    )
+
+
+def test_macos_generic_rejects_oauth(mac_package) -> None:
+    content = json.dumps(_sample_installed_oauth_dict()).encode()
+    assert hygiene.inspect_path(mac_package({"client_secret.json": content}))
+
+
+@pytest.mark.parametrize("content", [b"{broken", b'{"web": {}}', b"[]", b"\xff"])
+def test_macos_malformed_oauth(mac_package, content: bytes) -> None:
+    assert hygiene.inspect_path(
+        mac_package({"client_secret.json": content}), allow_oauth_client=True
+    )
+
+
+@pytest.mark.parametrize(
+    "prohibited",
+    [
+        "google_token.json", "token.json", "credentials.json",
+        "message.eml", "message.eml.part", "mailbox.mbox", "mailbox.mbox.part",
+        "export.sqlite3", "export.sqlite3-wal", "checksums.sha256",
+        "export-report.html", "account.json", "labels.json", "messages.jsonl",
+        ".git/config", ".venv/file", "__pycache__/file.pyc", ".pytest_cache/file",
+        "htmlcov/index.html", "coverage.xml", ".coverage",
+    ],
+)
+def test_macos_rejects_prohibited_contents_inside_app(mac_package, prohibited: str) -> None:
+    package = mac_package({f"Mailbox Rescue.app/Contents/Resources/{prohibited}": b"synthetic"})
+    assert hygiene.inspect_path(package)
+
+
+def test_hygiene_direct_app_scan_cannot_allow_embedded_oauth(tmp_path: Path) -> None:
+    target = tmp_path / "Mailbox Rescue.app" / "Contents"
+    target.mkdir(parents=True)
+    (target / "client_secret.json").write_text(json.dumps(_sample_installed_oauth_dict()))
+    assert hygiene.inspect_path(target, allow_oauth_client=True)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Requires POSIX symlinks")
+def test_macos_framework_symlinks_and_external_links(tmp_path: Path) -> None:
+    target = tmp_path / "Mailbox Rescue"
+    contents = target / "Mailbox Rescue.app" / "Contents"
+    framework = contents / "Frameworks" / "QtCore.framework" / "Versions" / "A"
+    framework.mkdir(parents=True)
+    (framework / "QtCore").write_bytes(b"synthetic framework")
+    (framework.parent / "Current").symlink_to("A", target_is_directory=True)
+    assert hygiene.inspect_path(target) == []
+    external = tmp_path / "external"
+    external.mkdir()
+    (contents / "external").symlink_to(external, target_is_directory=True)
+    assert any("External release symlink" in v for v in hygiene.inspect_path(target))
+    (contents / "broken").symlink_to("missing")
+    assert any("Broken release symlink" in v for v in hygiene.inspect_path(target))
+
+
+def test_hygiene_zip_backslash_token_path_is_detected(tmp_path: Path) -> None:
+    target = tmp_path / "release.zip"
+    with zipfile.ZipFile(target, "w") as archive:
+        archive.writestr(r"Mailbox Rescue\Mailbox Rescue.app\Contents\token.json", b"synthetic")
+    assert any("Prohibited token" in v for v in hygiene.inspect_path(target))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows zipfile normalizes backslashes on read")
+def test_hygiene_zip_backslash_sidecar_fails_without_crashing(tmp_path: Path) -> None:
+    target = tmp_path / "release.zip"
+    with zipfile.ZipFile(target, "w") as archive:
+        archive.writestr(
+            r"Mailbox Rescue\client_secret.json", json.dumps(_sample_installed_oauth_dict())
+        )
+    assert hygiene.inspect_path(target, allow_oauth_client=True)
 
 
 def _sample_installed_oauth_dict() -> dict[str, object]:

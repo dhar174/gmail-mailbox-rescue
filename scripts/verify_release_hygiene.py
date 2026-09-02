@@ -6,7 +6,7 @@ import json
 import sys
 import urllib.parse
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 PROHIBITED_TOKEN_PATTERNS = [
     "*token*.json",
@@ -39,6 +39,9 @@ PROHIBITED_DEV_AND_CACHE_PATTERNS = [
     ".coverage*",
     ".git*",
     ".venv*",
+    "htmlcov",
+    "coverage.xml",
+    ".ruff_cache",
 ]
 
 VALID_CLIENT_SECRET_PATTERNS = [
@@ -255,7 +258,8 @@ def inspect_path(
 
     When allow_oauth_client is True (configured release):
       - Expected OAuth client configs: EXACTLY 1.
-      - For directory: exactly 'client_secret.json' at the bundle root.
+      - For directory: exactly 'client_secret.json' at the distribution root,
+        beside the Windows executable or macOS .app (never inside an .app).
       - For ZIP archive: exactly 'Mailbox Rescue/client_secret.json'.
       - Duplicate ZIP entries, alternative folders, or 0 configs fail hygiene.
       - The permitted sidecar content is validated.
@@ -270,8 +274,8 @@ def inspect_path(
             oauth_candidates: list[str] = []
 
             for entry in entries:
-                name = Path(entry).name
                 full_rel = entry.replace("\\", "/")
+                name = PurePosixPath(full_rel).name
 
                 # 1. Check prohibited tokens
                 for pat in PROHIBITED_TOKEN_PATTERNS:
@@ -324,7 +328,7 @@ def inspect_path(
                     )
                 else:
                     cand = oauth_candidates[0]
-                    if cand != expected_zip_path:
+                    if cand != expected_zip_path or cand not in entries:
                         violations.append(
                             f"Unexpected or misplaced OAuth client secrets file detected: '{cand}'. "
                             f"When OAuth staging is enabled, exactly '{expected_zip_path}' is permitted."
@@ -339,10 +343,19 @@ def inspect_path(
         oauth_candidates_dir: list[tuple[str, Path]] = []
 
         for item in target.rglob("*"):
-            if not item.is_file():
-                continue
             name = item.name
             rel = item.relative_to(target).as_posix()
+
+            # PyInstaller macOS bundles use internal framework symlinks. Their
+            # real contents are scanned separately; external/broken links must
+            # not hide uninspected files outside the distribution.
+            if item.is_symlink():
+                try:
+                    resolved = item.resolve(strict=True)
+                    if not resolved.is_relative_to(target.resolve()):
+                        violations.append(f"External release symlink detected: '{rel}'")
+                except (OSError, RuntimeError):
+                    violations.append(f"Broken release symlink detected: '{rel}'")
 
             # 1. Check prohibited tokens
             for pat in PROHIBITED_TOKEN_PATTERNS:
@@ -394,7 +407,11 @@ def inspect_path(
                 )
             else:
                 rel, item_path = oauth_candidates_dir[0]
-                if rel != expected_dir_path:
+                inside_app = any(
+                    parent.suffix.lower() == ".app"
+                    for parent in (target, *target.parents)
+                )
+                if rel != expected_dir_path or inside_app:
                     violations.append(
                         f"Unexpected or misplaced OAuth client secrets file detected: '{rel}'. "
                         f"When OAuth staging is enabled, exactly '{expected_dir_path}' at root is permitted."
