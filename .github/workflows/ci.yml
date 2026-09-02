@@ -92,6 +92,21 @@ jobs:
           PY
       - name: Build and verify generic macOS ZIP
         run: ./scripts/build-macos.sh --clean
+      - name: Launch extracted packaged app with native macOS UI (no OAuth)
+        run: |
+          extraction="$RUNNER_TEMP/Mailbox Rescue Packaged Test"
+          mkdir -p "$extraction"
+          ditto -x -k dist/macos/releases/Mailbox-Rescue-v*-macos-arm64.zip "$extraction"
+          app="$extraction/Mailbox Rescue/Mailbox Rescue.app"
+          swiftc scripts/check-macos-window.swift -o "$RUNNER_TEMP/check-macos-window"
+          env -u QT_QPA_PLATFORM /usr/bin/open -n "$app"
+          "$RUNNER_TEMP/check-macos-window" "$app" "$RUNNER_TEMP/packaged-macos-window.png"
+      - name: Upload packaged startup screenshot (disconnected app only)
+        uses: actions/upload-artifact@v7
+        with:
+          name: Mailbox-Rescue-macos-startup-evidence
+          path: ${{ runner.temp }}/packaged-macos-window.png
+          if-no-files-found: error
       - name: Upload generic ZIP only (no OAuth or mailbox data)
         uses: actions/upload-artifact@v7
         with:
