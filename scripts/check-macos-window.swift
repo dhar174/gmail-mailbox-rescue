@@ -12,7 +12,7 @@ func fail(_ message: String) -> Never {
 guard CommandLine.arguments.count == 3 else {
     fail("Expected app bundle path and screenshot output path")
 }
-let bundleURL = URL(fileURLWithPath: CommandLine.arguments[1]).standardizedFileURL
+let bundleURL = URL(fileURLWithPath: CommandLine.arguments[1]).resolvingSymlinksInPath()
 let screenshot = CommandLine.arguments[2]
 let deadline = Date().addingTimeInterval(30)
 var observedApp: NSRunningApplication?
@@ -21,9 +21,9 @@ var observedWindow: CGWindowID?
 while Date() < deadline {
     if let app = NSRunningApplication.runningApplications(
         withBundleIdentifier: "com.dhar174.mailbox-rescue"
-    ).first(where: { $0.bundleURL?.standardizedFileURL == bundleURL }) {
+    ).first(where: { $0.bundleURL?.resolvingSymlinksInPath().path == bundleURL.path }) {
         observedApp = app
-        app.activate(options: [.activateIgnoringOtherApps])
+        app.activate(options: [])
         let windows = CGWindowListCopyWindowInfo(
             [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID
         ) as? [[String: Any]] ?? []
@@ -43,6 +43,17 @@ while Date() < deadline {
 }
 
 guard let app = observedApp, let windowID = observedWindow else {
+    for candidate in NSRunningApplication.runningApplications(
+        withBundleIdentifier: "com.dhar174.mailbox-rescue"
+    ) {
+        print("Diagnostic app PID: \(candidate.processIdentifier), bundle: \(candidate.bundleURL?.path ?? "unknown")")
+    }
+    if let app = observedApp {
+        let windows = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] ?? []
+        for window in windows where (window[kCGWindowOwnerPID as String] as? Int32) == app.processIdentifier {
+            print("Diagnostic app window: \(window)")
+        }
+    }
     observedApp?.terminate()
     fail("Packaged app did not produce an onscreen window within 30 seconds")
 }

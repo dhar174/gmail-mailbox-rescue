@@ -99,8 +99,16 @@ jobs:
           ditto -x -k dist/macos/releases/Mailbox-Rescue-v*-macos-arm64.zip "$extraction"
           app="$extraction/Mailbox Rescue/Mailbox Rescue.app"
           swiftc scripts/check-macos-window.swift -o "$RUNNER_TEMP/check-macos-window"
-          env -u QT_QPA_PLATFORM /usr/bin/open -n "$app"
+          env -u QT_QPA_PLATFORM /usr/bin/open -n \
+            --stdout "$RUNNER_TEMP/packaged-startup.stdout" \
+            --stderr "$RUNNER_TEMP/packaged-startup.stderr" "$app"
           "$RUNNER_TEMP/check-macos-window" "$app" "$RUNNER_TEMP/packaged-macos-window.png"
+      - name: Packaged startup diagnostics (generic app, no credentials)
+        if: failure()
+        run: |
+          for log in "$RUNNER_TEMP/packaged-startup.stdout" "$RUNNER_TEMP/packaged-startup.stderr"; do
+            if [[ -f "$log" ]]; then cat "$log"; fi
+          done
       - name: Upload packaged startup screenshot (disconnected app only)
         uses: actions/upload-artifact@v7
         with:
