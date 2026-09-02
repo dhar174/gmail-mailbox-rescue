@@ -39,7 +39,9 @@ a = Analysis(
         "PySide6.QtGui",
         "PySide6.QtWidgets",
     ],
-    excludes=["tkinter", "unittest", "pdb", "pytest", "pytest_cov", "ruff"],
+    # pyparsing (via httplib2/googleapiclient) imports unittest at runtime.
+    # It is a required stdlib dependency, even though this app does not run tests.
+    excludes=["tkinter", "pdb", "pytest", "pytest_cov", "ruff"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)
