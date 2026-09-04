@@ -12,7 +12,7 @@ Your data remains 100% private and stays entirely on your local machine.
 PREREQUISITE:
 --------------------------------------------------------------------------------
 IMPORTANT: Mailbox Rescue requires a file named "client_secret.json" located
-directly beside "Mailbox Rescue.exe".
+directly beside "Mailbox Rescue.exe" (Windows) or "Mailbox Rescue.app" (Mac).
 
   - If this file was already included in your folder, leave it where it is.
   - If this file is missing, contact the person who provided Mailbox Rescue
@@ -21,9 +21,18 @@ directly beside "Mailbox Rescue.exe".
 
 HOW TO RUN AN EXPORT:
 --------------------------------------------------------------------------------
-1. Double-click "Mailbox Rescue.exe".
+1. Download the ZIP for your computer and extract it first (on Mac, double-click
+   the ZIP). Open the extracted "Mailbox Rescue" folder.
+   Keep the app and "client_secret.json" together in this folder. On Mac, do not
+   move just the app to Applications or put the JSON file inside the app.
+   Double-click "Mailbox Rescue.exe" (Windows) or "Mailbox Rescue.app" (Mac).
    * Note for Windows: If a "Windows protected your PC" (SmartScreen) warning
      appears, click "More info" and then click "Run anyway".
+   * Note for Mac: This pilot is not notarized by Apple. If macOS blocks it
+     because the developer cannot be verified, and you trust the person who
+     supplied it, open Apple menu > System Settings > Privacy & Security.
+     Find the message about Mailbox Rescue, click "Open Anyway", then confirm
+     "Open". If your work Mac does not allow this, contact your IT team.
 
 2. Click "Connect Google Account".
    * Your web browser will open to Google's sign-in page.
@@ -40,18 +49,20 @@ HOW TO RUN AN EXPORT:
      entire mailbox (often several gigabytes).
 
 5. Click "Start Export".
-   * Leave Mailbox Rescue open while it downloads and verifies your email.
+   * Leave Mailbox Rescue open and keep your computer awake while it downloads
+     and verifies your email.
    * The progress bar will show current scan and download status.
 
 
 INTERRUPTIONS & RESUMING:
 --------------------------------------------------------------------------------
 If your computer goes to sleep, restarts, or you close the app during export:
-1. Reopen "Mailbox Rescue.exe".
+1. Reopen "Mailbox Rescue.exe" (Windows) or "Mailbox Rescue.app" (Mac).
 2. Connect your account.
 3. Select the same scope and the SAME destination folder.
 4. Click "Start Export". Mailbox Rescue will safely resume where it left off,
    skipping already verified messages without creating duplicates.
+   If asked whether to continue the existing export, choose "Yes".
 
 
 WHAT TO KEEP:
@@ -60,6 +71,7 @@ When export completes, keep the entire backup folder intact. It contains:
   - messages/          Individual .eml files (can be opened in Outlook/Thunderbird)
   - mailbox.mbox       Standard mailbox archive
   - export.sqlite3     Export index and resume checkpoint database
+  - metadata/          Account, label, and message details
   - export-report.html Verification and summary report (open in any web browser)
   - checksums.sha256   Cryptographic integrity hashes for all files
 ================================================================================

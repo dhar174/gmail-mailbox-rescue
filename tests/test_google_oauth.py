@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import stat
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -7,6 +9,16 @@ import pytest
 from google.oauth2.credentials import Credentials
 
 from mailbox_rescue.auth.google_oauth import GoogleOAuth, OAuthConfigurationError
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Requires real POSIX permissions")
+def test_saved_token_has_private_posix_mode(tmp_path: Path) -> None:
+    token = tmp_path / "user data" / "google_token.json"
+    oauth = GoogleOAuth(tmp_path / "client_secret.json", token)
+    credentials = MagicMock(spec=Credentials)
+    credentials.to_json.return_value = "{}"
+    oauth._save(credentials)
+    assert stat.S_IMODE(token.stat().st_mode) == 0o600
 
 
 def test_save_creates_final_token_and_removes_temp(tmp_path: Path) -> None:
@@ -120,6 +132,9 @@ def test_authorize_missing_client_secrets_with_env_override(
 
     custom_secrets = tmp_path / "custom_dir" / "custom_client_secret.json"
     monkeypatch.setenv("MAILBOX_RESCUE_GOOGLE_CLIENT_SECRETS", str(custom_secrets))
+    monkeypatch.setattr(
+        "mailbox_rescue.config.user_data_path", lambda *args: tmp_path / "user data"
+    )
 
     paths = AppPaths.discover()
     oauth = GoogleOAuth(client_secrets_file=paths.client_secrets_file, token_file=paths.token_file)
